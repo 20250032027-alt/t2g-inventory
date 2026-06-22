@@ -95,6 +95,13 @@ export default function Sales() {
   const clientSuggestRef = useRef(null)
   const [openProductSuggestLine, setOpenProductSuggestLine] = useState(null)
   const [suggestActiveIndex, setSuggestActiveIndex] = useState(-1)
+  const suggestListRef = useRef(null)
+
+  useEffect(() => {
+    if (!suggestListRef.current || suggestActiveIndex < 0) return
+    const item = suggestListRef.current.children[suggestActiveIndex]
+    item?.scrollIntoView({ block: 'nearest' })
+  }, [suggestActiveIndex])
 
   function today() { return new Date().toISOString().split('T')[0] }
 
@@ -747,7 +754,7 @@ export default function Sales() {
                             const suggestions = getProductSuggestions(line.productSearch)
                             if (suggestions.length === 0) return null
                             return (
-                              <ul style={{
+                              <ul ref={suggestListRef} style={{
                                 position: 'absolute',
                                 top: '100%',
                                 left: 0,
