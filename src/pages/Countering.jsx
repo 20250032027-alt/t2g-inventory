@@ -56,6 +56,7 @@ export default function Countering() {
   const [showFifoForm, setShowFifoForm] = useState(false)
   const [fifoClient, setFifoClient] = useState('')
   const [fifoDate, setFifoDate] = useState(today())
+  const [fifoRef, setFifoRef] = useState('')
   const [fifoNotes, setFifoNotes] = useState('')
   const [fifoQtys, setFifoQtys] = useState({})
   const [fifoPreview, setFifoPreview] = useState(null)
@@ -70,6 +71,7 @@ export default function Countering() {
   // Edit counter entry
   const [editingCounter, setEditingCounter] = useState(null)
   const [editDate, setEditDate] = useState('')
+  const [editRef, setEditRef] = useState('')
   const [editNotes, setEditNotes] = useState('')
   const [editQtys, setEditQtys] = useState({}) // keyed by counter_item id
   const [editError, setEditError] = useState('')
@@ -211,7 +213,7 @@ export default function Countering() {
     // 1. One counter_entry header (no invoice_id — spans multiple invoices)
     const { data: entry, error: entryErr } = await supabase
       .from('counter_entries')
-      .insert({ invoice_id: null, date: fifoDate, notes: fifoNotes.trim() || null })
+      .insert({ invoice_id: null, date: fifoDate, reference_no: fifoRef.trim() || null, notes: fifoNotes.trim() || null })
       .select().single()
 
     if (entryErr) { setSaving(false); setFifoError(entryErr.message); return }
@@ -233,6 +235,7 @@ export default function Countering() {
     setShowFifoForm(false)
     setFifoQtys({})
     setFifoPreview(null)
+    setFifoRef('')
     setFifoNotes('')
     setFifoDate(today())
     fetchAll()
@@ -244,6 +247,7 @@ export default function Countering() {
     setFifoPreview(null)
     setFifoError('')
     setFifoDate(today())
+    setFifoRef('')
     setFifoNotes('')
     setShowFifoForm(true)
   }
@@ -297,6 +301,7 @@ export default function Countering() {
   function openEditCounter(log) {
     setEditingCounter(log)
     setEditDate(log.date)
+    setEditRef(log.reference_no || '')
     setEditNotes(log.notes || '')
     const qtys = {}
     ;(log.counter_items || []).forEach(ci => { qtys[ci.id] = String(ci.quantity) })
@@ -323,7 +328,7 @@ export default function Countering() {
 
     const { error: headerErr } = await supabase
       .from('counter_entries')
-      .update({ date: editDate, notes: editNotes.trim() || null })
+      .update({ date: editDate, reference_no: editRef.trim() || null, notes: editNotes.trim() || null })
       .eq('id', editingCounter.id)
 
     if (headerErr) { setSaving(false); setEditError(headerErr.message); return }
@@ -540,6 +545,9 @@ export default function Countering() {
                                     return (
                                       <div key={log.id} style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 6, display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
                                         <span className="td-mono" style={{ marginRight: 4, flexShrink: 0 }}>{log.date}</span>
+                                        {log.reference_no && (
+                                          <span className="td-muted" style={{ flexShrink: 0 }}>{log.reference_no}</span>
+                                        )}
                                         <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', flex: 1 }}>
                                           {relevantItems.map(ci => (
                                             <span key={ci.product_id}>
@@ -606,9 +614,13 @@ export default function Countering() {
                   <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
                 </div>
                 <div className="field-group">
-                  <label>Notes</label>
-                  <input value={editNotes} onChange={e => setEditNotes(e.target.value)} placeholder="Optional" />
+                  <label>Reference / Invoice #</label>
+                  <input value={editRef} onChange={e => setEditRef(e.target.value)} placeholder="e.g. SI-2025-001" />
                 </div>
+              </div>
+              <div className="field-group">
+                <label>Notes</label>
+                <input value={editNotes} onChange={e => setEditNotes(e.target.value)} placeholder="Optional" />
               </div>
 
               <div className="lines-section">
@@ -693,9 +705,13 @@ export default function Countering() {
                   <input type="date" value={fifoDate} onChange={e => { setFifoDate(e.target.value); setFifoPreview(null) }} />
                 </div>
                 <div className="field-group">
-                  <label>Notes</label>
-                  <input value={fifoNotes} onChange={e => setFifoNotes(e.target.value)} placeholder="Optional" />
+                  <label>Reference / Invoice #</label>
+                  <input value={fifoRef} onChange={e => setFifoRef(e.target.value)} placeholder="e.g. SI-2025-001" />
                 </div>
+              </div>
+              <div className="field-group">
+                <label>Notes</label>
+                <input value={fifoNotes} onChange={e => setFifoNotes(e.target.value)} placeholder="Optional" />
               </div>
 
               {fifoClient && (

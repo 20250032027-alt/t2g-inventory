@@ -202,6 +202,7 @@ export default function Reports() {
       const counterRows = counterItems.flatMap(entry =>
         (entry.counter_items || []).map(ci => ({
           'Date': entry.date,
+          'Counter Ref #': entry.reference_no || '',
           'Consign Invoice': ci.invoices?.reference_no || '',
           'Client': ci.invoices?.client || '',
           'Product': ci.products?.name,
@@ -265,7 +266,7 @@ export default function Reports() {
           'Product': ci.products?.name,
           'Quantity': ci.quantity,
           'Unit': ci.products?.unit,
-          'Ref / Client': `${ci.invoices?.reference_no || ''} ${ci.invoices?.client || ''}`.trim(),
+          'Ref / Client': `${entry.reference_no || ci.invoices?.reference_no || ''} ${ci.invoices?.client || ''}`.trim(),
         }))
       )
       const allMovements = [...inRows, ...inReturnRows, ...outSalesRows, ...outReturnRows, ...settledRows]
@@ -430,7 +431,7 @@ export default function Reports() {
                     product: ci.products?.name || '—',
                     unit: ci.products?.unit,
                     qty: Number(ci.quantity),
-                    ref: [ci.invoices?.reference_no, ci.invoices?.client].filter(Boolean).join(' · '),
+                    ref: [entry.reference_no || ci.invoices?.reference_no, ci.invoices?.client].filter(Boolean).join(' · '),
                     color: 'var(--accent)',
                   }))
                 })
