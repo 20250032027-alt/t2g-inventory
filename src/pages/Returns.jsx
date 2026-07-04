@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
-import { Plus, X, Check, ChevronDown, Search } from 'lucide-react'
+import { Plus, X, Check, ChevronDown, Search, Pencil } from 'lucide-react'
 import { showToast } from '../components/Toast'
 
 const REASONS = ['Bad Order', 'Wrong Item', 'Damaged', 'Expired', 'Client Return', 'Other']
@@ -19,6 +19,7 @@ export default function Returns() {
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [editingEntry, setEditingEntry] = useState(null)
 
   function today() { return new Date().toISOString().split('T')[0] }
 
@@ -51,7 +52,24 @@ export default function Returns() {
   }, [entries, search, filterReason])
 
   function openNew() {
+    setEditingEntry(null)
     setForm({ product_id: products[0]?.id || '', quantity: '', date: today(), reason: 'Bad Order', restore_stock: true, reference_no: '', client: '', notes: '' })
+    setError('')
+    setShowForm(true)
+  }
+
+  function openEdit(entry) {
+    setEditingEntry(entry)
+    setForm({
+      product_id: entry.product_id,
+      quantity: String(entry.quantity),
+      date: entry.date,
+      reason: entry.reason || 'Bad Order',
+      restore_stock: entry.restore_stock,
+      reference_no: entry.reference_no || '',
+      client: entry.client || '',
+      notes: entry.notes || '',
+    })
     setError('')
     setShowForm(true)
   }
@@ -61,18 +79,22 @@ export default function Returns() {
     if (!form.product_id) return setError('Select a product.')
     if (!form.quantity || isNaN(form.quantity) || Number(form.quantity) <= 0) return setError('Enter a valid quantity.')
     setSaving(true); setError('')
-    const { error } = await supabase.from('return_entries').insert({
+    const payload = {
       product_id: form.product_id, quantity: Number(form.quantity), date: form.date,
       reason: form.reason, restore_stock: form.restore_stock,
       reference_no: form.reference_no.trim() || null,
       client: form.client.trim() || null,
       notes: form.notes.trim() || null,
-    })
+    }
+    const { error } = editingEntry
+      ? await supabase.from('return_entries').update(payload).eq('id', editingEntry.id)
+      : await supabase.from('return_entries').insert(payload)
     setSaving(false)
     if (error) return setError(error.message)
     setShowForm(false)
+    setEditingEntry(null)
     fetchAll()
-    showToast('Return logged successfully')
+    showToast(editingEntry ? 'Return entry updated' : 'Return logged successfully')
   }
 
   async function handleDelete(id) {
@@ -139,6 +161,9 @@ export default function Returns() {
                   <td>{e.restore_stock ? <span className="badge badge-green">Returned to Stock</span> : <span className="badge badge-red">Written Off</span>}</td>
                   <td className="td-muted">{e.notes || '—'}</td>
                   <td className="td-actions">
+                    <button className="icon-btn" onClick={() => openEdit(e)} title="Edit" style={{ marginRight: 2 }}>
+                      <Pencil size={14} />
+                    </button>
                     <button className="icon-btn danger" onClick={() => handleDelete(e.id)} title="Delete">×</button>
                   </td>
                 </tr>
@@ -149,11 +174,11 @@ export default function Returns() {
       )}
 
       {showForm && (
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+        <div className="modal-overlay" onClick={() => { setShowForm(false); setEditingEntry(null) }}>
           <div className="modal modal-wide" onClick={ev => ev.stopPropagation()}>
             <div className="modal-header">
-              <h2>Log Return / Bad Order</h2>
-              <button className="icon-btn" onClick={() => setShowForm(false)}><X size={18} /></button>
+              <h2>{editingEntry ? 'Edit Return / Bad Order' : 'Log Return / Bad Order'}</h2>
+              <button className="icon-btn" onClick={() => { setShowForm(false); setEditingEntry(null) }}><X size={18} /></button>
             </div>
             <form onSubmit={handleSave} className="modal-form">
               <div className="field-row">
@@ -208,8 +233,8 @@ export default function Returns() {
               </div>
               {error && <p className="form-error">{error}</p>}
               <div className="modal-actions">
-                <button type="button" className="btn-ghost" onClick={() => setShowForm(false)}>Cancel</button>
-                <button type="submit" className="btn-primary" disabled={saving}><Check size={15} /> {saving ? 'Saving...' : 'Save'}</button>
+                <button type="button" className="btn-ghost" onClick={() => { setShowForm(false); setEditingEntry(null) }}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={saving}><Check size={15} /> {saving ? 'Saving...' : editingEntry ? 'Update' : 'Save'}</button>
               </div>
             </form>
           </div>

@@ -411,6 +411,26 @@ export default function Sales() {
     return (inv.invoice_items || []).reduce((s, item) => s + itemRevenue(item), 0)
   }
 
+  // How much of a given product on a given invoice has been countered/settled
+  function getCounteredQtyForItem(invoiceId, productId) {
+    return counterItems
+      .filter(ci => ci.invoice_id === invoiceId && ci.product_id === productId)
+      .reduce((s, ci) => s + Number(ci.quantity), 0)
+  }
+
+  // Settlement status for Consign invoices (Cash/Credit are settled at the point of sale, no concept applies)
+  function invoiceSettlementStatus(inv) {
+    if (inv.payment_type !== 'Consign') return null
+    const items = inv.invoice_items || []
+    if (items.length === 0) return null
+    const totalQty = items.reduce((s, i) => s + Number(i.quantity), 0)
+    const totalCountered = items.reduce((s, i) => s + getCounteredQtyForItem(inv.id, i.product_id), 0)
+    const pct = totalQty > 0 ? Math.round((totalCountered / totalQty) * 100) : 0
+    if (pct === 0) return { label: 'Pending', cls: 'badge-amber', pct }
+    if (pct >= 100) return { label: 'Fully Settled', cls: 'badge-green', pct }
+    return { label: 'Partial', cls: 'badge-blue', pct }
+  }
+
   function invoiceSummary(inv) {
     const items = inv.invoice_items || []
     if (items.length === 0) return '—'
@@ -509,6 +529,7 @@ export default function Sales() {
               {filtered.map(inv => {
                 const expanded = expandedIds.has(inv.id)
                 const rev = invoiceRevenue(inv)
+                const settlement = invoiceSettlementStatus(inv)
                 return [
                   <tr key={inv.id} className="invoice-summary-row" onClick={() => toggleExpand(inv.id)} style={{cursor: 'pointer'}}>
                     <td>
@@ -521,7 +542,14 @@ export default function Sales() {
                     <td className="td-name">{inv.client || '—'}</td>
                     <td className="td-muted">{invoiceSummary(inv)}</td>
                     <td><span className={`badge channel-${inv.channel?.toLowerCase()}`}>{inv.channel}</span></td>
-                    <td><span className={`badge payment-${inv.payment_type?.toLowerCase()}`}>{inv.payment_type}</span></td>
+                    <td>
+                      <span className={`badge payment-${inv.payment_type?.toLowerCase()}`}>{inv.payment_type}</span>
+                      {settlement && (
+                        <span className={`badge ${settlement.cls}`} style={{ marginLeft: 6 }}>
+                          {settlement.label}{settlement.pct > 0 && settlement.pct < 100 ? ` ${settlement.pct}%` : ''}
+                        </span>
+                      )}
+                    </td>
                     {hasPrice && <td className="td-qty" style={{color: rev > 0 ? 'var(--green-text)' : undefined}}>{rev > 0 ? fmt(rev) : '—'}</td>}
                     <td className="td-actions" onClick={e => e.stopPropagation()}>
                       <button className="icon-btn" onClick={() => requestEdit(inv)} title="Edit (Admin)" style={{ marginRight: 2 }}>
@@ -544,6 +572,8 @@ export default function Sales() {
                                 <th>Quantity</th>
                                 {hasPrice && <th>Unit Price</th>}
                                 {hasPrice && <th>Amount</th>}
+                                {inv.payment_type === 'Consign' && <th>Settled</th>}
+                                {inv.payment_type === 'Consign' && <th>Remaining</th>}
                               </tr>
                             </thead>
                             <tbody>
@@ -553,6 +583,8 @@ export default function Sales() {
                                   : null
                                 const displayAmt = item.amount != null ? Number(item.amount) : autoAmt
                                 const isOverride = item.amount != null && autoAmt != null && Number(item.amount) !== autoAmt
+                                const countered = inv.payment_type === 'Consign' ? getCounteredQtyForItem(inv.id, item.product_id) : null
+                                const remaining = countered != null ? Number(item.quantity) - countered : null
                                 return (
                                   <tr key={item.id}>
                                     <td>{item.products?.name}</td>
@@ -577,6 +609,17 @@ export default function Sales() {
                                             )}
                                           </span>
                                         ) : '—'}
+                                      </td>
+                                    )}
+                                    {inv.payment_type === 'Consign' && (
+                                      <td className="td-qty" style={{ color: countered > 0 ? 'var(--green-text)' : undefined }}>
+                                        {countered.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
+                                      </td>
+                                    )}
+                                    {inv.payment_type === 'Consign' && (
+                                      <td className="td-qty" style={{ opacity: remaining === 0 ? 0.4 : 1 }}>
+                                        {remaining.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
+                                        {remaining === 0 && <span style={{ marginLeft: 6, fontSize: 11 }}>✓</span>}
                                       </td>
                                     )}
                                   </tr>

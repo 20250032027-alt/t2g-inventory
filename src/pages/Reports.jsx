@@ -42,7 +42,7 @@ export default function Reports() {
       invQ, retQ, prodQ,
       supabase.from('products').select('id, name, unit_price').order('name'),
       supabase.from('counter_entries')
-        .select('*, invoices(id, reference_no, client, payment_type), counter_items(product_id, quantity, products(name, unit, unit_price))')
+        .select('*, counter_items(product_id, quantity, invoice_id, products(name, unit, unit_price), invoices(reference_no, client))')
         .gte('date', dateFrom).lte('date', dateTo)
         .order('date', { ascending: false }),
       supabase.from('invoices')
@@ -202,8 +202,8 @@ export default function Reports() {
       const counterRows = counterItems.flatMap(entry =>
         (entry.counter_items || []).map(ci => ({
           'Date': entry.date,
-          'Consign Invoice': entry.invoices?.reference_no || '',
-          'Client': entry.invoices?.client || '',
+          'Consign Invoice': ci.invoices?.reference_no || '',
+          'Client': ci.invoices?.client || '',
           'Product': ci.products?.name,
           'Qty Settled': ci.quantity,
           'Unit': ci.products?.unit,
@@ -255,7 +255,20 @@ export default function Reports() {
         'Unit': e.products?.unit,
         'Ref / Client': `${e.reference_no || ''} ${e.client || ''}`.trim(),
       }))
-      const allMovements = [...inRows, ...inReturnRows, ...outSalesRows, ...outReturnRows]
+      // SETTLED: countered consign sales invoices (paperwork settlement, not a new physical stock exit —
+      // the goods already left as OUT when the consign invoice was created)
+      const settledRows = counterItems.flatMap(entry =>
+        (entry.counter_items || []).map(ci => ({
+          'Date': entry.date,
+          'Movement': 'SETTLED',
+          'Type': 'Countered (Consign Settlement)',
+          'Product': ci.products?.name,
+          'Quantity': ci.quantity,
+          'Unit': ci.products?.unit,
+          'Ref / Client': `${ci.invoices?.reference_no || ''} ${ci.invoices?.client || ''}`.trim(),
+        }))
+      )
+      const allMovements = [...inRows, ...inReturnRows, ...outSalesRows, ...outReturnRows, ...settledRows]
         .sort((a, b) => a['Date'].localeCompare(b['Date']))
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(allMovements), 'Inventory In-Out')
     }
@@ -347,7 +360,7 @@ export default function Reports() {
           ) : mode === 'inout' ? (
             <>
               <h2 className="section-title" style={{marginTop:'28px',marginBottom:'4px'}}>Inventory In / Out</h2>
-              <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>All stock movements for the selected period. IN = production + returns to stock. OUT = sales + written-off returns.</p>
+              <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>All stock movements for the selected period. IN = production + returns to stock. OUT = sales + written-off returns. SETTLED = consign sales countered (paperwork only — stock already left as OUT at the time of the consign invoice, not counted again here).</p>
               {(() => {
                 // Build unified movement list
                 const movements = []
@@ -406,12 +419,29 @@ export default function Reports() {
                   color: 'var(--red-text, #f87171)',
                 }))
 
+                // SETTLED: countered consign sales invoices — a paperwork settlement, not a new
+                // physical stock exit (the stock already left as OUT when the consign invoice was made).
+                // Shown for traceability only; excluded from IN/OUT/Net totals below.
+                counterItems.forEach(entry => {
+                  ;(entry.counter_items || []).forEach(ci => movements.push({
+                    date: entry.date,
+                    direction: 'SETTLED',
+                    type: 'Countered · Consign Settlement',
+                    product: ci.products?.name || '—',
+                    unit: ci.products?.unit,
+                    qty: Number(ci.quantity),
+                    ref: [ci.invoices?.reference_no, ci.invoices?.client].filter(Boolean).join(' · '),
+                    color: 'var(--accent)',
+                  }))
+                })
+
                 // Sort by date desc
                 movements.sort((a, b) => b.date.localeCompare(a.date))
 
-                // Per-product running totals for summary
+                // Per-product running totals for summary (SETTLED rows are informational only, not counted)
                 const productTotals = {}
                 movements.forEach(m => {
+                  if (m.direction !== 'IN' && m.direction !== 'OUT') return
                   if (!productTotals[m.product]) productTotals[m.product] = { in: 0, out: 0, unit: m.unit }
                   if (m.direction === 'IN') productTotals[m.product].in += m.qty
                   else productTotals[m.product].out += m.qty
@@ -485,15 +515,15 @@ export default function Reports() {
                               <td className="td-mono">{m.date}</td>
                               <td>
                                 <span className="badge" style={{
-                                  background: m.direction === 'IN' ? 'rgba(34,197,94,0.12)' : 'rgba(148,163,184,0.1)',
-                                  color: m.direction === 'IN' ? 'var(--green-text)' : 'var(--text-muted)',
+                                  background: m.direction === 'IN' ? 'rgba(34,197,94,0.12)' : m.direction === 'SETTLED' ? 'rgba(99,102,241,0.12)' : 'rgba(148,163,184,0.1)',
+                                  color: m.direction === 'IN' ? 'var(--green-text)' : m.direction === 'SETTLED' ? 'var(--accent)' : 'var(--text-muted)',
                                   fontWeight: 700
                                 }}>{m.direction}</span>
                               </td>
                               <td className="td-muted" style={{fontSize:12}}>{m.type}</td>
                               <td className="td-name">{m.product}</td>
                               <td className="td-qty" style={{color: m.color, fontWeight: 600}}>
-                                {m.direction === 'OUT' ? '-' : '+'}{m.qty.toLocaleString()} <span className="unit-label">{m.unit}</span>
+                                {m.direction === 'OUT' ? '-' : m.direction === 'SETTLED' ? '' : '+'}{m.qty.toLocaleString()} <span className="unit-label">{m.unit}</span>
                               </td>
                               <td className="td-muted" style={{fontSize:12}}>{m.ref || '—'}</td>
                               {hasPrice && <td className="td-qty" style={{color:'var(--green-text)'}}>{m.price != null ? fmt(m.price) : '—'}</td>}

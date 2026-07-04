@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { Check, X, Search, ChevronRight, Trash2, Lock, Plus } from 'lucide-react'
+import { Check, X, Search, ChevronRight, Trash2, Lock, Plus, Pencil } from 'lucide-react'
 import { showToast } from '../components/Toast'
 
 const ADMIN_PIN = '1234'
@@ -67,6 +67,13 @@ export default function Countering() {
   const [expandedIds, setExpandedIds] = useState(new Set())
   const [pinModal, setPinModal] = useState(null)
 
+  // Edit counter entry
+  const [editingCounter, setEditingCounter] = useState(null)
+  const [editDate, setEditDate] = useState('')
+  const [editNotes, setEditNotes] = useState('')
+  const [editQtys, setEditQtys] = useState({}) // keyed by counter_item id
+  const [editError, setEditError] = useState('')
+
   useEffect(() => { fetchAll() }, [])
 
   async function fetchAll() {
@@ -79,7 +86,7 @@ export default function Countering() {
         .order('date', { ascending: true }), // oldest first for FIFO
       supabase
         .from('counter_entries')
-        .select('*, counter_items(product_id, quantity, invoice_id, products(name, unit))')
+        .select('*, counter_items(id, product_id, quantity, invoice_id, products(name, unit))')
         .order('date', { ascending: false }),
       supabase.from('products').select('id, name, unit, unit_price').order('name'),
     ])
@@ -261,15 +268,79 @@ export default function Countering() {
     })
   }
 
-  function requestDeleteCounter(log) { setPinModal(log) }
+  function requestDeleteCounter(log) { setPinModal({ action: 'delete', log }) }
+  function requestEditCounter(log) { setPinModal({ action: 'edit', log }) }
   function handlePinSuccess() {
-    const log = pinModal
+    const { action, log } = pinModal
     setPinModal(null)
-    handleDeleteCounter(log)
+    if (action === 'delete') handleDeleteCounter(log)
+    if (action === 'edit') openEditCounter(log)
   }
   async function handleDeleteCounter(log) {
     await supabase.from('counter_entries').delete().eq('id', log.id)
     showToast('Counter entry deleted. Consign balance restored.')
+    fetchAll()
+  }
+
+  // The most this counter_item's quantity can be edited up to, without exceeding
+  // what was actually consigned on its invoice (accounting for what OTHER
+  // counter entries have already drawn from that same invoice/product).
+  function maxAllowedForCounterItem(ci) {
+    const inv = consignInvoices.find(i => i.id === ci.invoice_id)
+    const invItem = inv?.invoice_items?.find(it => it.product_id === ci.product_id)
+    if (!invItem) return Number(ci.quantity)
+    const totalCountered = getCounteredQty(ci.invoice_id, ci.product_id)
+    const otherCountered = totalCountered - Number(ci.quantity)
+    return Math.max(0, Number(invItem.quantity) - otherCountered)
+  }
+
+  function openEditCounter(log) {
+    setEditingCounter(log)
+    setEditDate(log.date)
+    setEditNotes(log.notes || '')
+    const qtys = {}
+    ;(log.counter_items || []).forEach(ci => { qtys[ci.id] = String(ci.quantity) })
+    setEditQtys(qtys)
+    setEditError('')
+  }
+
+  async function handleEditSave(e) {
+    e.preventDefault()
+    const items = editingCounter.counter_items || []
+    for (const ci of items) {
+      const val = editQtys[ci.id]
+      if (val === '' || isNaN(val) || Number(val) <= 0) {
+        setEditError(`Enter a valid quantity for ${ci.products?.name}.`)
+        return
+      }
+      const max = maxAllowedForCounterItem(ci)
+      if (Number(val) > max) {
+        setEditError(`${ci.products?.name}: max ${max} ${ci.products?.unit} available for this invoice (tried ${val}).`)
+        return
+      }
+    }
+    setSaving(true); setEditError('')
+
+    const { error: headerErr } = await supabase
+      .from('counter_entries')
+      .update({ date: editDate, notes: editNotes.trim() || null })
+      .eq('id', editingCounter.id)
+
+    if (headerErr) { setSaving(false); setEditError(headerErr.message); return }
+
+    for (const ci of items) {
+      const newQty = Number(editQtys[ci.id])
+      if (newQty === Number(ci.quantity)) continue
+      const { error: itemErr } = await supabase
+        .from('counter_items')
+        .update({ quantity: newQty })
+        .eq('id', ci.id)
+      if (itemErr) { setSaving(false); setEditError(itemErr.message); return }
+    }
+
+    setSaving(false)
+    setEditingCounter(null)
+    showToast('Counter entry updated.')
     fetchAll()
   }
 
@@ -478,8 +549,14 @@ export default function Countering() {
                                         </span>
                                         {log.notes && <span style={{ opacity: 0.5, flexShrink: 0 }}>· {log.notes}</span>}
                                         <button
-                                          className="icon-btn danger"
+                                          className="icon-btn"
                                           style={{ marginLeft: 'auto', flexShrink: 0 }}
+                                          title="Edit counter entry (Admin)"
+                                          onClick={e => { e.stopPropagation(); requestEditCounter(log) }}
+                                        ><Pencil size={12} /></button>
+                                        <button
+                                          className="icon-btn danger"
+                                          style={{ flexShrink: 0 }}
                                           title="Delete counter entry (Admin)"
                                           onClick={e => { e.stopPropagation(); requestDeleteCounter(log) }}
                                         ><Trash2 size={12} /></button>
@@ -503,10 +580,76 @@ export default function Countering() {
       {/* Pin modal */}
       {pinModal && (
         <PinModal
-          title="Delete Counter Entry"
+          title={pinModal.action === 'edit' ? 'Edit Counter Entry' : 'Delete Counter Entry'}
           onSuccess={handlePinSuccess}
           onCancel={() => setPinModal(null)}
         />
+      )}
+
+      {/* Edit Counter Entry Form */}
+      {editingCounter && (
+        <div className="modal-overlay" onClick={() => setEditingCounter(null)}>
+          <div className="modal modal-wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2>Edit Counter Entry</h2>
+                <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text-2)' }}>
+                  Adjust settled quantities. Each is capped by what's still available on its original invoice.
+                </p>
+              </div>
+              <button className="icon-btn" onClick={() => setEditingCounter(null)}><X size={18} /></button>
+            </div>
+            <form onSubmit={handleEditSave} className="modal-form">
+              <div className="field-row">
+                <div className="field-group">
+                  <label>Date</label>
+                  <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
+                </div>
+                <div className="field-group">
+                  <label>Notes</label>
+                  <input value={editNotes} onChange={e => setEditNotes(e.target.value)} placeholder="Optional" />
+                </div>
+              </div>
+
+              <div className="lines-section">
+                <div className="lines-header">
+                  <span className="lines-title">Settled Quantities</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {(editingCounter.counter_items || []).map(ci => {
+                    const inv = consignInvoices.find(i => i.id === ci.invoice_id)
+                    const max = maxAllowedForCounterItem(ci)
+                    return (
+                      <div key={ci.id} className="counter-row" style={{ alignItems: 'center' }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>
+                          {ci.products?.name}
+                          <div style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400 }}>
+                            {inv?.reference_no || inv?.date || 'Invoice'}
+                          </div>
+                        </div>
+                        <div className="td-qty" style={{ fontSize: 13 }}>Max {max} <span className="unit-label">{ci.products?.unit}</span></div>
+                        <input
+                          type="number"
+                          min="0.01"
+                          max={max}
+                          step="any"
+                          value={editQtys[ci.id] ?? ''}
+                          onChange={e => setEditQtys(prev => ({ ...prev, [ci.id]: e.target.value }))}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {editError && <p className="form-error">{editError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="btn-ghost" onClick={() => setEditingCounter(null)}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={saving}><Check size={15} /> {saving ? 'Saving...' : 'Update'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* FIFO Entry Form */}
