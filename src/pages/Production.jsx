@@ -1,7 +1,47 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { Plus, X, Check, ChevronDown, Search } from 'lucide-react'
+import { Plus, X, Check, ChevronDown, Search, Pencil, Lock, SlidersHorizontal } from 'lucide-react'
 import { showToast } from '../components/Toast'
+
+const ADMIN_PIN = '1234'
+
+function PinModal({ onSuccess, onCancel, title }) {
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState('')
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus() }, [])
+  function handleSubmit(e) {
+    e.preventDefault()
+    if (pin === ADMIN_PIN) { onSuccess() }
+    else { setError('Incorrect PIN. Try again.'); setPin(''); inputRef.current?.focus() }
+  }
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" style={{ maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Lock size={16} style={{ color: 'var(--amber)' }} />
+            <h2>{title || 'Admin Required'}</h2>
+          </div>
+          <button className="icon-btn" onClick={onCancel}><X size={18} /></button>
+        </div>
+        <form onSubmit={handleSubmit} style={{ padding: '20px 24px 24px' }}>
+          <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--text-2)' }}>Enter the admin PIN to continue.</p>
+          <div className="field-group" style={{ marginBottom: 12 }}>
+            <label>Admin PIN</label>
+            <input ref={inputRef} type="password" inputMode="numeric" maxLength={8} value={pin}
+              onChange={e => { setPin(e.target.value); setError('') }} placeholder="••••" autoComplete="off" />
+          </div>
+          {error && <p className="form-error" style={{ marginBottom: 12 }}>{error}</p>}
+          <div className="modal-actions">
+            <button type="button" className="btn-ghost" onClick={onCancel}>Cancel</button>
+            <button type="submit" className="btn-primary" disabled={!pin}><Check size={15} /> Confirm</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
 
 export default function Production() {
   const [entries, setEntries] = useState([])
@@ -13,6 +53,14 @@ export default function Production() {
   const [form, setForm] = useState({ product_id: '', quantity: '', date: today(), batch_notes: '' })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [editingEntry, setEditingEntry] = useState(null)
+
+  // Adjustment entry (PIN-gated manual correction, can be positive or negative)
+  const [pinModal, setPinModal] = useState(false)
+  const [showAdjustForm, setShowAdjustForm] = useState(false)
+  const [adjustForm, setAdjustForm] = useState({ product_id: '', quantity: '', date: today(), batch_notes: '' })
+  const [adjustError, setAdjustError] = useState('')
+  const [adjustSaving, setAdjustSaving] = useState(false)
 
   function today() { return new Date().toISOString().split('T')[0] }
 
@@ -42,8 +90,35 @@ export default function Production() {
     return rows
   }, [entries, search, filterProduct])
 
+  // Running balance per product: cumulative total (production batches +/- adjustments) in
+  // chronological order, so each row shows the balance as of that entry.
+  const { runningBalanceByEntry, currentBalanceByProduct } = useMemo(() => {
+    const chronological = [...entries].sort((a, b) => {
+      if (a.date !== b.date) return a.date.localeCompare(b.date)
+      return new Date(a.created_at || 0) - new Date(b.created_at || 0)
+    })
+    const byEntry = {}
+    const running = {}
+    chronological.forEach(e => {
+      running[e.product_id] = (running[e.product_id] || 0) + Number(e.quantity)
+      byEntry[e.id] = running[e.product_id]
+    })
+    return { runningBalanceByEntry: byEntry, currentBalanceByProduct: running }
+  }, [entries])
+
   function openNew() {
     setForm({ product_id: products[0]?.id || '', quantity: '', date: today(), batch_notes: '' })
+    setError(''); setShowForm(true)
+  }
+
+  function openEdit(entry) {
+    setEditingEntry(entry)
+    setForm({
+      product_id: entry.product_id,
+      quantity: String(entry.quantity),
+      date: entry.date,
+      batch_notes: entry.batch_notes || '',
+    })
     setError(''); setShowForm(true)
   }
 
@@ -52,15 +127,19 @@ export default function Production() {
     if (!form.product_id) return setError('Select a product.')
     if (!form.quantity || isNaN(form.quantity) || Number(form.quantity) <= 0) return setError('Enter a valid quantity.')
     setSaving(true); setError('')
-    const { error } = await supabase.from('production_entries').insert({
+    const payload = {
       product_id: form.product_id, quantity: Number(form.quantity),
       date: form.date, batch_notes: form.batch_notes.trim() || null,
-    })
+    }
+    const { error } = editingEntry
+      ? await supabase.from('production_entries').update(payload).eq('id', editingEntry.id)
+      : await supabase.from('production_entries').insert(payload)
     setSaving(false)
     if (error) return setError(error.message)
     setShowForm(false)
+    setEditingEntry(null)
     fetchAll()
-    showToast('Production batch logged')
+    showToast(editingEntry ? 'Production entry updated' : 'Production batch logged')
   }
 
   async function handleDelete(id) {
@@ -69,7 +148,38 @@ export default function Production() {
     fetchAll()
   }
 
+  // Adjustment entry: PIN-gated, quantity can be negative (manual stock correction)
+  function requestAdjust() { setPinModal(true) }
+  function handlePinSuccess() {
+    setPinModal(false)
+    setAdjustForm({ product_id: products[0]?.id || '', quantity: '', date: today(), batch_notes: '' })
+    setAdjustError('')
+    setShowAdjustForm(true)
+  }
+
+  async function handleAdjustSave(e) {
+    e.preventDefault()
+    if (!adjustForm.product_id) return setAdjustError('Select a product.')
+    if (!adjustForm.quantity || isNaN(adjustForm.quantity) || Number(adjustForm.quantity) === 0) {
+      return setAdjustError('Enter a non-zero quantity (positive to add stock, negative to remove).')
+    }
+    setAdjustSaving(true); setAdjustError('')
+    const { error } = await supabase.from('production_entries').insert({
+      product_id: adjustForm.product_id,
+      quantity: Number(adjustForm.quantity),
+      date: adjustForm.date,
+      batch_notes: adjustForm.batch_notes.trim() || null,
+      is_adjustment: true,
+    })
+    setAdjustSaving(false)
+    if (error) return setAdjustError(error.message)
+    setShowAdjustForm(false)
+    fetchAll()
+    showToast('Adjustment entry recorded')
+  }
+
   const selectedProduct = products.find(p => p.id === form.product_id)
+  const adjustSelectedProduct = products.find(p => p.id === adjustForm.product_id)
   const totalFiltered = filtered.reduce((s, e) => s + Number(e.quantity), 0)
 
   return (
@@ -79,9 +189,14 @@ export default function Production() {
           <h1>Production</h1>
           <p className="page-desc">Record and search production batches by product or notes.</p>
         </div>
-        <button className="btn-primary" onClick={openNew} disabled={products.length === 0}>
-          <Plus size={16} /> Log Production
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn-ghost" onClick={requestAdjust} disabled={products.length === 0}>
+            <SlidersHorizontal size={16} /> Adjustment Entry
+          </button>
+          <button className="btn-primary" onClick={openNew} disabled={products.length === 0}>
+            <Plus size={16} /> Log Production
+          </button>
+        </div>
       </div>
 
       {products.length === 0 && !loading && <div className="notice">Add products first before logging production.</div>}
@@ -98,6 +213,14 @@ export default function Production() {
           </select>
           <ChevronDown size={15} className="select-icon" />
         </div>
+        {filterProduct !== 'all' && (
+          <div className="filter-revenue">
+            <span className="filter-revenue-label">Current Running Balance</span>
+            <span className="filter-revenue-value">
+              {Number(currentBalanceByProduct[filterProduct] || 0).toLocaleString()} {products.find(p => p.id === filterProduct)?.unit}
+            </span>
+          </div>
+        )}
         {filtered.length > 0 && (
           <div className="filter-revenue">
             <span className="filter-revenue-label">Filtered Total</span>
@@ -114,16 +237,27 @@ export default function Production() {
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Product</th><th>Quantity</th><th>Batch Notes</th><th></th></tr>
+              <tr><th>Date</th><th>Product</th><th>Quantity</th><th>Type</th><th>Running Balance</th><th>Batch Notes</th><th></th></tr>
             </thead>
             <tbody>
               {filtered.map(e => (
                 <tr key={e.id}>
                   <td className="td-mono">{e.date}</td>
                   <td className="td-name">{e.products?.name}</td>
-                  <td className="td-qty">{Number(e.quantity).toLocaleString()} <span className="unit-label">{e.products?.unit}</span></td>
+                  <td className="td-qty" style={{ color: e.is_adjustment && Number(e.quantity) < 0 ? 'var(--red-text, #f87171)' : undefined }}>
+                    {Number(e.quantity) > 0 ? '+' : ''}{Number(e.quantity).toLocaleString()} <span className="unit-label">{e.products?.unit}</span>
+                  </td>
+                  <td>
+                    {e.is_adjustment
+                      ? <span className="badge" style={{ background: 'rgba(99,102,241,0.12)', color: 'var(--accent)', fontWeight: 700 }}>Adjustment</span>
+                      : <span className="td-muted">Production</span>}
+                  </td>
+                  <td className="td-qty">{Number(runningBalanceByEntry[e.id] ?? 0).toLocaleString()} <span className="unit-label">{e.products?.unit}</span></td>
                   <td className="td-muted">{e.batch_notes || '—'}</td>
                   <td className="td-actions">
+                    <button className="icon-btn" onClick={() => openEdit(e)} title="Edit" style={{ marginRight: 2 }}>
+                      <Pencil size={14} />
+                    </button>
                     <button className="icon-btn danger" onClick={() => handleDelete(e.id)} title="Delete">×</button>
                   </td>
                 </tr>
@@ -134,11 +268,11 @@ export default function Production() {
       )}
 
       {showForm && (
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+        <div className="modal-overlay" onClick={() => { setShowForm(false); setEditingEntry(null) }}>
           <div className="modal" onClick={ev => ev.stopPropagation()}>
             <div className="modal-header">
-              <h2>Log Production</h2>
-              <button className="icon-btn" onClick={() => setShowForm(false)}><X size={18} /></button>
+              <h2>{editingEntry ? 'Edit Production Entry' : 'Log Production'}</h2>
+              <button className="icon-btn" onClick={() => { setShowForm(false); setEditingEntry(null) }}><X size={18} /></button>
             </div>
             <form onSubmit={handleSave} className="modal-form">
               <div className="field-group">
@@ -166,8 +300,64 @@ export default function Production() {
               </div>
               {error && <p className="form-error">{error}</p>}
               <div className="modal-actions">
-                <button type="button" className="btn-ghost" onClick={() => setShowForm(false)}>Cancel</button>
-                <button type="submit" className="btn-primary" disabled={saving}><Check size={15} /> {saving ? 'Saving...' : 'Save'}</button>
+                <button type="button" className="btn-ghost" onClick={() => { setShowForm(false); setEditingEntry(null) }}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={saving}><Check size={15} /> {saving ? 'Saving...' : editingEntry ? 'Update' : 'Save'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* PIN gate for Adjustment Entry */}
+      {pinModal && (
+        <PinModal
+          title="Adjustment Entry"
+          onSuccess={handlePinSuccess}
+          onCancel={() => setPinModal(false)}
+        />
+      )}
+
+      {/* Adjustment Entry form */}
+      {showAdjustForm && (
+        <div className="modal-overlay" onClick={() => setShowAdjustForm(false)}>
+          <div className="modal" onClick={ev => ev.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2>Adjustment Entry</h2>
+                <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text-2)' }}>
+                  Manual stock correction. Use a positive quantity to add stock, negative to remove it.
+                </p>
+              </div>
+              <button className="icon-btn" onClick={() => setShowAdjustForm(false)}><X size={18} /></button>
+            </div>
+            <form onSubmit={handleAdjustSave} className="modal-form">
+              <div className="field-group">
+                <label>Product *</label>
+                <div className="select-wrap">
+                  <select value={adjustForm.product_id} onChange={e => setAdjustForm({...adjustForm, product_id: e.target.value})}>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <ChevronDown size={16} className="select-icon" />
+                </div>
+              </div>
+              <div className="field-row">
+                <div className="field-group">
+                  <label>Quantity * {adjustSelectedProduct && <span className="unit-hint">({adjustSelectedProduct.unit})</span>}</label>
+                  <input type="number" step="any" value={adjustForm.quantity} onChange={e => setAdjustForm({...adjustForm, quantity: e.target.value})} placeholder="e.g. -5 or 5" />
+                </div>
+                <div className="field-group">
+                  <label>Date *</label>
+                  <input type="date" value={adjustForm.date} onChange={e => setAdjustForm({...adjustForm, date: e.target.value})} />
+                </div>
+              </div>
+              <div className="field-group">
+                <label>Reason / Notes</label>
+                <input value={adjustForm.batch_notes} onChange={e => setAdjustForm({...adjustForm, batch_notes: e.target.value})} placeholder="e.g. Physical count correction" />
+              </div>
+              {adjustError && <p className="form-error">{adjustError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="btn-ghost" onClick={() => setShowAdjustForm(false)}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={adjustSaving}><Check size={15} /> {adjustSaving ? 'Saving...' : 'Save Adjustment'}</button>
               </div>
             </form>
           </div>
