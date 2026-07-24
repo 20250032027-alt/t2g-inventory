@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { Check, X, Search, ChevronRight, Trash2, Lock, Plus, Pencil } from 'lucide-react'
+import { Check, X, Search, ChevronRight, Trash2, Lock, Plus, Pencil, Download } from 'lucide-react'
 import { showToast } from '../components/Toast'
+import * as XLSX from 'xlsx'
 
 const ADMIN_PIN = '1234'
 
@@ -67,6 +68,9 @@ export default function Countering() {
   const [search, setSearch] = useState('')
   const [expandedIds, setExpandedIds] = useState(new Set())
   const [pinModal, setPinModal] = useState(null)
+
+  // Sales records listing (flattened counter entries)
+  const [salesSearch, setSalesSearch] = useState('')
 
   // Edit counter entry
   const [editingCounter, setEditingCounter] = useState(null)
@@ -387,6 +391,75 @@ export default function Countering() {
     return map
   }, [fifoPreview, consignInvoices])
 
+  // Flattened list of every recorded sale (one row per product per counter entry)
+  const salesRecords = useMemo(() => {
+    return counterLogs.flatMap(log =>
+      (log.counter_items || []).map(ci => {
+        const inv = consignInvoices.find(i => i.id === ci.invoice_id)
+        const prod = products.find(p => p.id === ci.product_id)
+        const unitPrice = prod?.unit_price ? Number(prod.unit_price) : null
+        const quantity = Number(ci.quantity)
+        return {
+          id: ci.id,
+          entry: log,
+          date: log.date,
+          reference_no: log.reference_no || '',
+          notes: log.notes || '',
+          client: inv?.client || '—',
+          invoiceRef: inv?.reference_no || inv?.date || '—',
+          product: ci.products?.name || '—',
+          unit: ci.products?.unit || '',
+          quantity,
+          unitPrice,
+          amount: unitPrice != null ? quantity * unitPrice : null,
+        }
+      })
+    ).sort((a, b) => b.date.localeCompare(a.date))
+  }, [counterLogs, consignInvoices, products])
+
+  const filteredSalesRecords = useMemo(() => {
+    const q = salesSearch.trim().toLowerCase()
+    if (!q) return salesRecords
+    return salesRecords.filter(r =>
+      r.client.toLowerCase().includes(q) ||
+      r.product.toLowerCase().includes(q) ||
+      r.reference_no.toLowerCase().includes(q) ||
+      String(r.invoiceRef).toLowerCase().includes(q)
+    )
+  }, [salesRecords, salesSearch])
+
+  const salesRecordsTotal = filteredSalesRecords.reduce((s, r) => s + r.quantity, 0)
+  const salesRecordsAmountTotal = filteredSalesRecords.reduce((s, r) => s + (r.amount || 0), 0)
+  const salesRecordsHasPrice = filteredSalesRecords.some(r => r.amount != null)
+
+  function exportSalesExcel() {
+    if (filteredSalesRecords.length === 0) {
+      showToast('No sales records to export.')
+      return
+    }
+    const wb = XLSX.utils.book_new()
+    const rows = filteredSalesRecords.map(r => {
+      const row = {
+        'Date': r.date,
+        'Reference #': r.reference_no,
+        'Client': r.client,
+        'Consign Invoice': r.invoiceRef,
+        'Product': r.product,
+        'Quantity': r.quantity,
+        'Unit': r.unit,
+        'Notes': r.notes,
+      }
+      if (r.unitPrice != null) {
+        row['Unit Price (₱)'] = r.unitPrice
+        row['Amount (₱)'] = r.amount
+      }
+      return row
+    })
+    const ws = XLSX.utils.json_to_sheet(rows)
+    XLSX.utils.book_append_sheet(wb, ws, 'Sales Records')
+    XLSX.writeFile(wb, `T2G_Countering_SalesRecords_${today()}.xlsx`)
+  }
+
   return (
     <div className="page">
       <div className="page-header">
@@ -447,6 +520,94 @@ export default function Countering() {
           </div>
         </div>
       )}
+
+      {/* Sales Records listing */}
+      <div>
+        <div className="page-header" style={{ marginBottom: 10 }}>
+          <div className="section-title" style={{ marginBottom: 0 }}>Sales Records</div>
+          <button
+            className="btn-ghost"
+            onClick={exportSalesExcel}
+            disabled={filteredSalesRecords.length === 0}
+          >
+            <Download size={15} /> Download Excel
+          </button>
+        </div>
+        <div className="table-filters" style={{ marginBottom: 12 }}>
+          <div className="search-wrap">
+            <Search size={15} className="search-icon" />
+            <input
+              className="search-input"
+              placeholder="Search client, product, or reference..."
+              value={salesSearch}
+              onChange={e => setSalesSearch(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="skeleton-list">{[1, 2].map(i => <div key={i} className="skeleton-row" />)}</div>
+        ) : filteredSalesRecords.length === 0 ? (
+          <div className="empty-state"><p>No sales recorded yet. Use "Record Sales" to log a settlement.</p></div>
+        ) : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Ref #</th>
+                  <th>Client</th>
+                  <th>Consign Invoice</th>
+                  <th>Product</th>
+                  <th>Qty Sold</th>
+                  {salesRecordsHasPrice && <th>Amount</th>}
+                  <th>Notes</th>
+                  <th style={{ width: 70 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredSalesRecords.map(r => (
+                  <tr key={r.id}>
+                    <td className="td-mono">{r.date}</td>
+                    <td className="td-muted">{r.reference_no || '—'}</td>
+                    <td className="td-name">{r.client}</td>
+                    <td className="td-muted">{r.invoiceRef}</td>
+                    <td>{r.product}</td>
+                    <td className="td-qty">{r.quantity.toLocaleString()} <span className="unit-label">{r.unit}</span></td>
+                    {salesRecordsHasPrice && (
+                      <td className="td-qty">{r.amount != null ? fmt(r.amount) : '—'}</td>
+                    )}
+                    <td className="td-muted">{r.notes || '—'}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                        <button
+                          className="icon-btn"
+                          title="Edit counter entry (Admin)"
+                          onClick={() => requestEditCounter(r.entry)}
+                        ><Pencil size={12} /></button>
+                        <button
+                          className="icon-btn danger"
+                          title="Delete counter entry (Admin)"
+                          onClick={() => requestDeleteCounter(r.entry)}
+                        ><Trash2 size={12} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={5} style={{ fontWeight: 700, textAlign: 'right' }}>Total</td>
+                  <td className="td-qty" style={{ fontWeight: 700 }}>{salesRecordsTotal.toLocaleString()}</td>
+                  {salesRecordsHasPrice && <td className="td-qty" style={{ fontWeight: 700 }}>{fmt(salesRecordsAmountTotal)}</td>}
+                  <td></td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Audit view */}
       <div>
