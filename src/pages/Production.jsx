@@ -46,6 +46,9 @@ function PinModal({ onSuccess, onCancel, title }) {
 export default function Production() {
   const [entries, setEntries] = useState([])
   const [products, setProducts] = useState([])
+  const [recipes, setRecipes] = useState([]) // assembly_items: { product_id, raw_material_id, quantity_per_unit }
+  const [rawMaterials, setRawMaterials] = useState([])
+  const [rawMaterialStock, setRawMaterialStock] = useState({}) // raw_material_id -> current stock
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [search, setSearch] = useState('')
@@ -68,13 +71,63 @@ export default function Production() {
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: prods }, { data: ents }] = await Promise.all([
+    const [{ data: prods }, { data: ents }, { data: recipeRows }, { data: mats }, { data: matEntries }] = await Promise.all([
       supabase.from('products').select('id, name, unit').order('name'),
       supabase.from('production_entries').select('*, products(name, unit)').order('date', { ascending: false }).limit(500),
+      supabase.from('assembly_items').select('*'),
+      supabase.from('raw_materials').select('id, name, unit, opening_stock'),
+      supabase.from('raw_material_entries').select('raw_material_id, quantity'),
     ])
     setProducts(prods || [])
     setEntries(ents || [])
+    setRecipes(recipeRows || [])
+    setRawMaterials(mats || [])
+
+    // Current stock per raw material = opening_stock + sum of all signed entries
+    const stockMap = {}
+    ;(mats || []).forEach(m => { stockMap[m.id] = Number(m.opening_stock) || 0 })
+    ;(matEntries || []).forEach(e => { stockMap[e.raw_material_id] = (stockMap[e.raw_material_id] ?? 0) + Number(e.quantity) })
+    setRawMaterialStock(stockMap)
+
     setLoading(false)
+  }
+
+  function recipeFor(productId) {
+    return recipes.filter(r => r.product_id === productId)
+  }
+
+  // Consume raw materials per recipe for a saved production entry.
+  // Returns { error } on failure. Assumes any prior consumption rows for this entry are already removed.
+  async function consumeRawMaterials(productionEntryId, productId, quantity, date) {
+    const recipe = recipeFor(productId)
+    if (recipe.length === 0) return { error: null }
+    const rows = recipe.map(r => ({
+      raw_material_id: r.raw_material_id,
+      quantity: -(Number(r.quantity_per_unit) * Number(quantity)),
+      date,
+      batch_notes: 'Auto-consumed for production batch',
+      entry_type: 'consumption',
+      production_entry_id: productionEntryId,
+    }))
+    const { error } = await supabase.from('raw_material_entries').insert(rows)
+    return { error }
+  }
+
+  // Warn (but don't block) if a production run would take any raw material below zero.
+  function confirmStockIfShort(productId, quantity) {
+    const recipe = recipeFor(productId)
+    if (recipe.length === 0) return true
+    const shortages = []
+    recipe.forEach(r => {
+      const need = Number(r.quantity_per_unit) * Number(quantity)
+      const have = rawMaterialStock[r.raw_material_id] ?? 0
+      if (need > have) {
+        const mat = rawMaterials.find(m => m.id === r.raw_material_id)
+        shortages.push(`${mat?.name || 'Material'}: need ${need.toLocaleString()} ${mat?.unit || ''}, have ${have.toLocaleString()} ${mat?.unit || ''}`)
+      }
+    })
+    if (shortages.length === 0) return true
+    return confirm(`This batch needs more raw material than is currently in stock:\n\n${shortages.join('\n')}\n\nSave anyway? Raw material stock will go negative.`)
   }
 
   const filtered = useMemo(() => {
@@ -126,16 +179,39 @@ export default function Production() {
     e.preventDefault()
     if (!form.product_id) return setError('Select a product.')
     if (!form.quantity || isNaN(form.quantity) || Number(form.quantity) <= 0) return setError('Enter a valid quantity.')
+
+    if (!confirmStockIfShort(form.product_id, form.quantity)) return
+
     setSaving(true); setError('')
     const payload = {
       product_id: form.product_id, quantity: Number(form.quantity),
       date: form.date, batch_notes: form.batch_notes.trim() || null,
     }
-    const { error } = editingEntry
-      ? await supabase.from('production_entries').update(payload).eq('id', editingEntry.id)
-      : await supabase.from('production_entries').insert(payload)
+
+    let entryId = editingEntry?.id
+    let saveError
+    if (editingEntry) {
+      const { error } = await supabase.from('production_entries').update(payload).eq('id', editingEntry.id)
+      saveError = error
+      // Clear old auto-consumption rows for this entry before recomputing (recipe or quantity may have changed)
+      if (!error) await supabase.from('raw_material_entries').delete().eq('production_entry_id', editingEntry.id).eq('entry_type', 'consumption')
+    } else {
+      const { data, error } = await supabase.from('production_entries').insert(payload).select().single()
+      saveError = error
+      entryId = data?.id
+    }
+
+    if (saveError) { setSaving(false); return setError(saveError.message) }
+
+    if (!editingEntry?.is_adjustment && entryId) {
+      const { error: consumeError } = await consumeRawMaterials(entryId, form.product_id, form.quantity, form.date)
+      if (consumeError) {
+        setSaving(false)
+        return setError(`Production saved, but raw material consumption failed: ${consumeError.message}`)
+      }
+    }
+
     setSaving(false)
-    if (error) return setError(error.message)
     setShowForm(false)
     setEditingEntry(null)
     fetchAll()

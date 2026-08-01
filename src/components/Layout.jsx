@@ -2,17 +2,19 @@ import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import {
   LayoutDashboard, Package, Factory, ShoppingBag,
-  RotateCcw, BarChart2, LogOut, Menu, X, Handshake
+  RotateCcw, BarChart2, LogOut, Menu, X, Handshake, Boxes, Layers
 } from 'lucide-react'
 
 const NAV = [
-  { id: 'inventory',   label: 'Inventory',          icon: LayoutDashboard },
-  { id: 'products',    label: 'Products',            icon: Package },
-  { id: 'production',  label: 'Production',          icon: Factory },
-  { id: 'sales',       label: 'Sales',               icon: ShoppingBag },
-  { id: 'returns',     label: 'Returns / Bad Orders',icon: RotateCcw },
-  { id: 'countering',  label: 'Countering',          icon: Handshake },
-  { id: 'reports',     label: 'Reports',             icon: BarChart2 },
+  { id: 'inventory',     label: 'Inventory',            icon: LayoutDashboard },
+  { id: 'products',      label: 'Products',              icon: Package },
+  { id: 'rawmaterials',  label: 'Raw Materials',         icon: Boxes },
+  { id: 'assembly',      label: 'Product Assembly',      icon: Layers },
+  { id: 'production',    label: 'Production',            icon: Factory },
+  { id: 'sales',         label: 'Sales',                 icon: ShoppingBag },
+  { id: 'returns',       label: 'Returns / Bad Orders',  icon: RotateCcw },
+  { id: 'countering',    label: 'Countering',            icon: Handshake },
+  { id: 'reports',       label: 'Reports',               icon: BarChart2 },
 ]
 
 const BOTTOM_NAV = [
@@ -48,14 +50,14 @@ export default function Layout({ page, setPage, children }) {
             </button>
           ))}
           <div className="nav-section-label">Operations</div>
-          {NAV.slice(2, 6).map(({ id, label, icon: Icon }) => (
+          {NAV.slice(2, 8).map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${page === id ? 'nav-active' : ''}`}
               onClick={() => { setPage(id); setMobileOpen(false) }}>
               <Icon size={18} /><span>{label}</span>
             </button>
           ))}
           <div className="nav-section-label">Analytics</div>
-          {NAV.slice(6).map(({ id, label, icon: Icon }) => (
+          {NAV.slice(8).map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${page === id ? 'nav-active' : ''}`}
               onClick={() => { setPage(id); setMobileOpen(false) }}>
               <Icon size={18} /><span>{label}</span>

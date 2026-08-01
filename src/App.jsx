@@ -4,6 +4,8 @@ import Login from './pages/Login'
 import Layout from './components/Layout'
 import Inventory from './pages/Inventory'
 import Products from './pages/Products'
+import RawMaterials from './pages/RawMaterials'
+import Assembly from './pages/Assembly'
 import Production from './pages/Production'
 import Sales from './pages/Sales'
 import Returns from './pages/Returns'
@@ -21,6 +23,8 @@ function AppInner() {
   const pages = {
     inventory:  <Inventory setPage={setPage} />,
     products:   <Products />,
+    rawmaterials: <RawMaterials />,
+    assembly:   <Assembly />,
     production: <Production />,
     sales:      <Sales />,
     returns:    <Returns />,
