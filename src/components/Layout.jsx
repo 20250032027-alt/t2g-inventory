@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import {
   LayoutDashboard, Package, Factory, ShoppingBag,
-  RotateCcw, BarChart2, LogOut, Menu, X, Handshake, Boxes, Layers
+  RotateCcw, BarChart2, LogOut, Menu, X, Handshake, Boxes, Layers, Droplets
 } from 'lucide-react'
 
 const NAV = [
   { id: 'inventory',     label: 'Inventory',            icon: LayoutDashboard },
   { id: 'products',      label: 'Products',              icon: Package },
+  { id: 'tapperintake',  label: 'Tapper Intake',         icon: Droplets },
   { id: 'rawmaterials',  label: 'Raw Materials',         icon: Boxes },
   { id: 'assembly',      label: 'Product Assembly',      icon: Layers },
   { id: 'production',    label: 'Production',            icon: Factory },
@@ -50,14 +51,14 @@ export default function Layout({ page, setPage, children }) {
             </button>
           ))}
           <div className="nav-section-label">Operations</div>
-          {NAV.slice(2, 8).map(({ id, label, icon: Icon }) => (
+          {NAV.slice(2, 9).map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${page === id ? 'nav-active' : ''}`}
               onClick={() => { setPage(id); setMobileOpen(false) }}>
               <Icon size={18} /><span>{label}</span>
             </button>
           ))}
           <div className="nav-section-label">Analytics</div>
-          {NAV.slice(8).map(({ id, label, icon: Icon }) => (
+          {NAV.slice(9).map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${page === id ? 'nav-active' : ''}`}
               onClick={() => { setPage(id); setMobileOpen(false) }}>
               <Icon size={18} /><span>{label}</span>

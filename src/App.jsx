@@ -4,6 +4,7 @@ import Login from './pages/Login'
 import Layout from './components/Layout'
 import Inventory from './pages/Inventory'
 import Products from './pages/Products'
+import TapperIntake from './pages/TapperIntake'
 import RawMaterials from './pages/RawMaterials'
 import Assembly from './pages/Assembly'
 import Production from './pages/Production'
@@ -23,6 +24,7 @@ function AppInner() {
   const pages = {
     inventory:  <Inventory setPage={setPage} />,
     products:   <Products />,
+    tapperintake: <TapperIntake />,
     rawmaterials: <RawMaterials />,
     assembly:   <Assembly />,
     production: <Production />,

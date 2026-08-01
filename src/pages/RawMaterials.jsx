@@ -225,6 +225,7 @@ export default function RawMaterials() {
   function typeBadge(e) {
     if (e.entry_type === 'adjustment') return <span className="badge" style={{ background: 'rgba(99,102,241,0.12)', color: 'var(--accent)', fontWeight: 700 }}>Adjustment</span>
     if (e.entry_type === 'consumption') return <span className="badge badge-amber">Consumed (Production)</span>
+    if (e.entry_type === 'tapper_intake') return <span className="badge badge-blue">Tapper Intake</span>
     return <span className="td-muted">Intake</span>
   }
 
@@ -328,13 +329,14 @@ export default function RawMaterials() {
                   <td className="td-qty">{Number(runningBalanceByEntry[e.id] ?? 0).toLocaleString()} <span className="unit-label">{e.raw_materials?.unit}</span></td>
                   <td className="td-muted">{e.batch_notes || '—'}</td>
                   <td className="td-actions">
-                    {e.entry_type !== 'consumption' && (
+                    {e.entry_type !== 'consumption' && e.entry_type !== 'tapper_intake' && (
                       <>
                         <button className="icon-btn" onClick={() => openEdit(e)} title="Edit" style={{ marginRight: 2 }}><Pencil size={14} /></button>
                         <button className="icon-btn danger" onClick={() => handleDelete(e.id)} title="Delete">×</button>
                       </>
                     )}
                     {e.entry_type === 'consumption' && <span className="td-muted" style={{ fontSize: 11 }}>via Production</span>}
+                    {e.entry_type === 'tapper_intake' && <span className="td-muted" style={{ fontSize: 11 }}>via Tapper Intake</span>}
                   </td>
                 </tr>
               ))}
