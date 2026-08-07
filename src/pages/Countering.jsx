@@ -51,6 +51,7 @@ export default function Countering() {
   const [consignInvoices, setConsignInvoices] = useState([])
   const [counterLogs, setCounterLogs] = useState([])
   const [products, setProducts] = useState([])
+  const [consignReturns, setConsignReturns] = useState([])
   const [loading, setLoading] = useState(true)
 
   // FIFO entry form
@@ -84,7 +85,7 @@ export default function Countering() {
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: invs }, { data: logs }, { data: prods }] = await Promise.all([
+    const [{ data: invs }, { data: logs }, { data: prods }, { data: returns }] = await Promise.all([
       supabase
         .from('invoices')
         .select('*, invoice_items(*, products(id, name, unit, unit_price))')
@@ -95,19 +96,33 @@ export default function Countering() {
         .select('*, counter_items(id, product_id, quantity, invoice_id, products(name, unit))')
         .order('date', { ascending: false }),
       supabase.from('products').select('id, name, unit, unit_price').order('name'),
+      supabase.from('return_entries').select('invoice_id, product_id, quantity').not('invoice_id', 'is', null),
     ])
     setConsignInvoices(invs || [])
     setCounterLogs(logs || [])
     setProducts(prods || [])
+    setConsignReturns(returns || [])
     setLoading(false)
   }
 
-  // How much has been countered for a given product on a given invoice
-  function getCounteredQty(invoiceId, productId) {
+  // Quantity settled as an actual sale (via Countering FIFO)
+  function getSoldQty(invoiceId, productId) {
     return counterLogs
       .flatMap(log => log.counter_items || [])
       .filter(item => item.invoice_id === invoiceId && item.product_id === productId)
       .reduce((s, item) => s + Number(item.quantity), 0)
+  }
+
+  // Quantity returned unsold by the client (via Returns / Bad Orders, tagged to this invoice)
+  function getReturnedQty(invoiceId, productId) {
+    return consignReturns
+      .filter(r => r.invoice_id === invoiceId && r.product_id === productId)
+      .reduce((s, r) => s + Number(r.quantity), 0)
+  }
+
+  // Total no longer pending with the client — sold OR returned, either way it's off the consign balance.
+  function getCounteredQty(invoiceId, productId) {
+    return getSoldQty(invoiceId, productId) + getReturnedQty(invoiceId, productId)
   }
 
   // Unique clients from all consign invoices (for the dropdown)
@@ -137,7 +152,7 @@ export default function Countering() {
       }
     }
     return stock
-  }, [consignInvoices, counterLogs, fifoClient])
+  }, [consignInvoices, counterLogs, consignReturns, fifoClient])
 
   // Total available per product across all consign invoices
   const availableByProduct = useMemo(() => {
@@ -256,7 +271,7 @@ export default function Countering() {
     setShowFifoForm(true)
   }
 
-  // Audit: per-invoice status
+  // Audit: per-invoice status (accounts for both sales and returns)
   function invoiceStatus(inv) {
     const items = inv.invoice_items || []
     if (items.length === 0) return { label: 'No Items', cls: '', pct: 0 }
@@ -264,7 +279,7 @@ export default function Countering() {
     const totalCountered = items.reduce((s, i) => s + getCounteredQty(inv.id, i.product_id), 0)
     const pct = totalQty > 0 ? Math.round((totalCountered / totalQty) * 100) : 0
     if (pct === 0) return { label: 'Pending', cls: 'badge-amber', pct }
-    if (pct >= 100) return { label: 'Fully Settled', cls: 'badge-green', pct }
+    if (pct >= 100) return { label: 'Closed', cls: 'badge-green', pct }
     return { label: 'Partial', cls: 'badge-blue', pct }
   }
 
@@ -668,20 +683,25 @@ export default function Countering() {
                                 <tr>
                                   <th>Product</th>
                                   <th>Consigned</th>
-                                  <th>Settled</th>
+                                  <th>Sold</th>
+                                  <th>Returned</th>
                                   <th>Remaining</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {(inv.invoice_items || []).map(item => {
-                                  const countered = getCounteredQty(inv.id, item.product_id)
-                                  const remaining = Number(item.quantity) - countered
+                                  const sold = getSoldQty(inv.id, item.product_id)
+                                  const returned = getReturnedQty(inv.id, item.product_id)
+                                  const remaining = Number(item.quantity) - sold - returned
                                   return (
                                     <tr key={item.id}>
                                       <td>{item.products?.name}</td>
                                       <td className="td-qty">{Number(item.quantity).toLocaleString()} <span className="unit-label">{item.products?.unit}</span></td>
-                                      <td className="td-qty" style={{ color: countered > 0 ? 'var(--green-text)' : undefined }}>
-                                        {countered.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
+                                      <td className="td-qty" style={{ color: sold > 0 ? 'var(--green-text)' : undefined }}>
+                                        {sold.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
+                                      </td>
+                                      <td className="td-qty" style={{ color: returned > 0 ? 'var(--amber)' : undefined }}>
+                                        {returned.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
                                       </td>
                                       <td className="td-qty" style={{ opacity: remaining === 0 ? 0.4 : 1 }}>
                                         {remaining.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
