@@ -78,7 +78,9 @@ export default function Sales() {
   const [showForm, setShowForm] = useState(false)
   const [expandedIds, setExpandedIds] = useState(new Set())
   const [search, setSearch] = useState('')
-  const [filterProduct, setFilterProduct] = useState('all')
+  const [filterProductIds, setFilterProductIds] = useState([]) // empty = All Products
+  const [showProductFilter, setShowProductFilter] = useState(false)
+  const productFilterRef = useRef(null)
   const [filterPayment, setFilterPayment] = useState('all')
   const [form, setForm] = useState({
     reference_no: '', client: '', date: today(),
@@ -96,6 +98,19 @@ export default function Sales() {
   const [openProductSuggestLine, setOpenProductSuggestLine] = useState(null)
   const [suggestActiveIndex, setSuggestActiveIndex] = useState(-1)
   const suggestListRef = useRef(null)
+
+  // Close product filter dropdown on outside click
+  useEffect(() => {
+    function handleClick(e) {
+      if (!productFilterRef.current?.contains(e.target)) setShowProductFilter(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  function toggleProductFilter(id) {
+    setFilterProductIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  }
 
   useEffect(() => {
     if (!suggestListRef.current || suggestActiveIndex < 0) return
@@ -334,8 +349,8 @@ export default function Sales() {
   const filtered = useMemo(() => {
     let rows = invoices
     if (filterPayment !== 'all') rows = rows.filter(i => i.payment_type === filterPayment)
-    if (filterProduct !== 'all') rows = rows.filter(i =>
-      i.invoice_items?.some(item => item.product_id === filterProduct)
+    if (filterProductIds.length > 0) rows = rows.filter(i =>
+      i.invoice_items?.some(item => filterProductIds.includes(item.product_id))
     )
     if (search.trim()) {
       const q = search.toLowerCase()
@@ -346,7 +361,7 @@ export default function Sales() {
       )
     }
     return rows
-  }, [invoices, search, filterProduct, filterPayment])
+  }, [invoices, search, filterProductIds, filterPayment])
 
   // Sorted unique client names from existing invoices
   // Normalize client name: trim + title case so "ororama" and "ORORAMA" are the same
@@ -441,17 +456,29 @@ export default function Sales() {
     return `${items.length} products`
   }
 
-  // Settled consign: counter_items that drew from invoices in the current filtered view
+  // Whether a line item counts toward the filtered revenue summary
+  function itemMatchesProductFilter(item) {
+    return filterProductIds.length === 0 || filterProductIds.includes(item.product_id)
+  }
+
+  // Revenue from only the filtered product(s) within an invoice — NOT the whole invoice total.
+  // (An invoice can mix a filtered product with others; those others shouldn't count here.)
+  function filteredItemsRevenue(inv) {
+    return (inv.invoice_items || []).filter(itemMatchesProductFilter).reduce((s, item) => s + itemRevenue(item), 0)
+  }
+
+  // Settled consign: counter_items that drew from invoices in the current filtered view,
+  // narrowed to the filtered product(s) too.
   const filteredInvoiceIds = new Set(filtered.map(inv => inv.id))
   const settledConsignRevenue = counterItems
-    .filter(ci => filteredInvoiceIds.has(ci.invoice_id))
+    .filter(ci => filteredInvoiceIds.has(ci.invoice_id) && (filterProductIds.length === 0 || filterProductIds.includes(ci.product_id)))
     .reduce((s, ci) => {
       const prod = products.find(p => p.id === ci.product_id)
       return s + (prod?.unit_price ? Number(ci.quantity) * Number(prod.unit_price) : 0)
     }, 0)
 
-  const paidRevenue = filtered.filter(inv => inv.payment_type !== 'Consign').reduce((s, inv) => s + invoiceRevenue(inv), 0)
-  const rawConsignRevenue = filtered.filter(inv => inv.payment_type === 'Consign').reduce((s, inv) => s + invoiceRevenue(inv), 0)
+  const paidRevenue = filtered.filter(inv => inv.payment_type !== 'Consign').reduce((s, inv) => s + filteredItemsRevenue(inv), 0)
+  const rawConsignRevenue = filtered.filter(inv => inv.payment_type === 'Consign').reduce((s, inv) => s + filteredItemsRevenue(inv), 0)
   // settled consign moves into real revenue; only unsettled portion stays pending
   const effectivePaidRevenue = paidRevenue + settledConsignRevenue
   const pendingConsignRevenue = Math.max(0, rawConsignRevenue - settledConsignRevenue)
@@ -475,12 +502,52 @@ export default function Sales() {
           <Search size={15} className="search-icon" />
           <input className="search-input" placeholder="Search client, product, reference..." value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <div className="select-wrap filter-select">
-          <select value={filterProduct} onChange={e => setFilterProduct(e.target.value)}>
-            <option value="all">All Products</option>
-            {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+        <div className="select-wrap filter-select" style={{ position: 'relative' }} ref={productFilterRef}>
+          <button
+            type="button"
+            className="filter-select-btn"
+            onClick={() => setShowProductFilter(s => !s)}
+            style={{
+              width: '100%', textAlign: 'left', background: 'transparent', border: '1px solid var(--border, #333)',
+              borderRadius: 8, padding: '9px 32px 9px 12px', fontSize: 13, color: 'inherit', cursor: 'pointer', position: 'relative',
+            }}
+          >
+            {filterProductIds.length === 0
+              ? 'All Products'
+              : filterProductIds.length === 1
+                ? (products.find(p => p.id === filterProductIds[0])?.name || '1 product')
+                : `${filterProductIds.length} products selected`}
+          </button>
           <ChevronDown size={15} className="select-icon" />
+          {showProductFilter && (
+            <div style={{
+              position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, marginTop: 4,
+              background: 'var(--surface, #1e1e1e)', border: '1px solid var(--border, #333)', borderRadius: 8,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35)', maxHeight: 260, overflowY: 'auto', minWidth: 220,
+            }}>
+              <div
+                onMouseDown={() => setFilterProductIds([])}
+                style={{ padding: '9px 14px', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, borderBottom: '1px solid var(--border-subtle, rgba(255,255,255,0.06))' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--hover, rgba(255,255,255,0.06))'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <input type="checkbox" readOnly checked={filterProductIds.length === 0} style={{ width: 'auto' }} />
+                All Products
+              </div>
+              {products.map(p => (
+                <div
+                  key={p.id}
+                  onMouseDown={() => toggleProductFilter(p.id)}
+                  style={{ padding: '9px 14px', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--hover, rgba(255,255,255,0.06))'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <input type="checkbox" readOnly checked={filterProductIds.includes(p.id)} style={{ width: 'auto' }} />
+                  {p.name}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="select-wrap filter-select">
           <select value={filterPayment} onChange={e => setFilterPayment(e.target.value)}>
@@ -529,6 +596,7 @@ export default function Sales() {
               {filtered.map(inv => {
                 const expanded = expandedIds.has(inv.id)
                 const rev = invoiceRevenue(inv)
+                const filteredRev = filteredItemsRevenue(inv)
                 const settlement = invoiceSettlementStatus(inv)
                 return [
                   <tr key={inv.id} className="invoice-summary-row" onClick={() => toggleExpand(inv.id)} style={{cursor: 'pointer'}}>
@@ -550,7 +618,14 @@ export default function Sales() {
                         </span>
                       )}
                     </td>
-                    {hasPrice && <td className="td-qty" style={{color: rev > 0 ? 'var(--green-text)' : undefined}}>{rev > 0 ? fmt(rev) : '—'}</td>}
+                    {hasPrice && (
+                      <td className="td-qty" style={{color: rev > 0 ? 'var(--green-text)' : undefined}}>
+                        {rev > 0 ? fmt(rev) : '—'}
+                        {filterProductIds.length > 0 && filteredRev !== rev && (
+                          <div style={{ opacity: 0.55, fontSize: '0.78em', fontWeight: 400 }}>{fmt(filteredRev)} from filtered</div>
+                        )}
+                      </td>
+                    )}
                     <td className="td-actions" onClick={e => e.stopPropagation()}>
                       <button className="icon-btn" onClick={() => requestEdit(inv)} title="Edit (Admin)" style={{ marginRight: 2 }}>
                         <Pencil size={14} />
