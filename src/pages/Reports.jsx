@@ -99,12 +99,41 @@ export default function Reports() {
     if (e.restore_stock) summaryMap[key].returns_back += Number(e.quantity)
     else summaryMap[key].returns_loss += Number(e.quantity)
   })
-  // Countered quantities per product (from counter_entries in date range)
+  // Revenue: prefer stored amount override, else qty × unit_price
+  function itemRevenue(item) {
+    if (item.amount != null) return Number(item.amount)
+    const price = item.products?.unit_price
+    return price ? Number(item.quantity) * Number(price) : 0
+  }
+
+  // The actual per-unit rate a specific consign invoice's product line was sold at
+  // (accounts for any discount/premium on that invoice — not the product's current list price).
+  function invoiceLineRate(invoiceId, productId) {
+    const inv = allConsignInvoices.find(i => i.id === invoiceId)
+    if (!inv) return null
+    const items = (inv.invoice_items || []).filter(it => it.product_id === productId)
+    const totalQty = items.reduce((s, it) => s + Number(it.quantity), 0)
+    if (totalQty === 0) return null
+    const totalAmt = items.reduce((s, it) => s + itemRevenue(it), 0)
+    return totalAmt / totalQty
+  }
+
+  // Dollar value of a settled (countered) quantity, using the real rate from the invoice
+  // it was drawn from — falls back to current unit price only if the source invoice can't be found.
+  function settledDollarValue(ci) {
+    const rate = invoiceLineRate(ci.invoice_id, ci.product_id)
+    const fallback = ci.products?.unit_price ? Number(ci.products.unit_price) : 0
+    return Number(ci.quantity) * (rate != null ? rate : fallback)
+  }
+
+  // Countered quantities & dollar value per product (from counter_entries in date range)
   const counteredMap = {}
+  const counteredDollarMap = {}
   counterItems.forEach(entry => {
     (entry.counter_items || []).forEach(ci => {
       const key = ci.products?.name || 'Unknown'
       counteredMap[key] = (counteredMap[key] || 0) + Number(ci.quantity)
+      counteredDollarMap[key] = (counteredDollarMap[key] || 0) + settledDollarValue(ci)
     })
   })
 
@@ -138,19 +167,13 @@ export default function Reports() {
     const totalCountered = pid ? (allCounteredByProduct[pid] || 0) : 0
     // Sales Discount: gross sticker value (qty × unit price) minus what was actually charged (amount override), across every invoice line for this product
     const salesDiscount = (r.paidGross || 0) - (r.paidActual || 0) + (r.consignGross || 0) - (r.consignActual || 0)
-    // Net Revenue: actual cash/credit collected (after discount), minus returns, plus consign that's been settled/countered this period
+    // Net Revenue: actual cash/credit collected (after discount), minus returns, plus consign that's been settled/countered this period —
+    // valued at the real amount each settled unit was actually invoiced for, not the product's current list price.
     const returnsValue = (r.returns_back + r.returns_loss) * Number(unit_price || 0)
-    const settledConsignRevenue = r.countered * Number(unit_price || 0)
+    const settledConsignRevenue = counteredDollarMap[r.product] || 0
     const netRevenue = (r.paidActual || 0) - returnsValue + settledConsignRevenue
     return { ...r, unit_price, remainingConsign: Math.max(0, totalConsigned - totalCountered), salesDiscount, netRevenue }
   })
-
-  // Revenue: prefer stored amount override, else qty × unit_price
-  function itemRevenue(item) {
-    if (item.amount != null) return Number(item.amount)
-    const price = item.products?.unit_price
-    return price ? Number(item.quantity) * Number(price) : 0
-  }
 
   const totalSold = allItems.reduce((s, i) => s + Number(i.quantity), 0)
   const totalReturns = returns.reduce((s, e) => s + Number(e.quantity), 0)
@@ -158,12 +181,11 @@ export default function Reports() {
   // Revenue (excl. Consign): real collected money. Consign sales are pending, tracked separately.
   const paidRevenue = allItems.filter(item => item.invoice?.payment_type !== 'Consign').reduce((s, item) => s + itemRevenue(item), 0)
   const rawConsignRevenue = allItems.filter(item => item.invoice?.payment_type === 'Consign').reduce((s, item) => s + itemRevenue(item), 0)
-  // Settled consign: all counter entries within the date range (regardless of when the original consign invoice was created)
+  // Settled consign: all counter entries within the date range (regardless of when the original consign invoice was created),
+  // valued at each settlement's real originating invoice rate.
   const settledConsignRevenue = counterItems
     .flatMap(entry => entry.counter_items || [])
-    .reduce((s, ci) => {
-      return s + (ci.products?.unit_price ? Number(ci.quantity) * Number(ci.products.unit_price) : 0)
-    }, 0)
+    .reduce((s, ci) => s + settledDollarValue(ci), 0)
   const effectivePaidRevenue = paidRevenue + settledConsignRevenue
   const pendingConsignRevenue = Math.max(0, rawConsignRevenue - settledConsignRevenue)
 
@@ -207,7 +229,7 @@ export default function Reports() {
           'Product': ci.products?.name,
           'Qty Settled': ci.quantity,
           'Unit': ci.products?.unit,
-          ...(ci.products?.unit_price ? { 'Amount (₱)': Number(ci.quantity) * Number(ci.products.unit_price) } : {})
+          ...(ci.products?.unit_price ? { 'Amount (₱)': settledDollarValue(ci) } : {})
         }))
       )
       if (counterRows.length > 0) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(counterRows), 'Countering')

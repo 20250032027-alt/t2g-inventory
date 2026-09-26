@@ -371,16 +371,34 @@ export default function Countering() {
   // Summary stats
   const hasPrice = products.some(p => p.unit_price)
 
+  // Actual amount an invoice line was sold for (respects any discount/premium override), not list price.
+  function itemRevenue(item) {
+    if (item.amount != null) return Number(item.amount)
+    const price = item.products?.unit_price
+    return price ? Number(item.quantity) * Number(price) : 0
+  }
+
+  // The real per-unit rate a specific consign invoice's product line was sold at —
+  // used to value settled/countered quantities accurately instead of the current list price.
+  function invoiceLineRate(invoiceId, productId) {
+    const inv = consignInvoices.find(i => i.id === invoiceId)
+    if (!inv) return null
+    const items = (inv.invoice_items || []).filter(it => it.product_id === productId)
+    const totalQty = items.reduce((s, it) => s + Number(it.quantity), 0)
+    if (totalQty === 0) return null
+    const totalAmt = items.reduce((s, it) => s + itemRevenue(it), 0)
+    return totalAmt / totalQty
+  }
+
   const totalConsignValue = consignInvoices.reduce((s, inv) =>
-    s + (inv.invoice_items || []).reduce((ss, item) => {
-      const price = item.products?.unit_price
-      return ss + (price ? Number(item.quantity) * Number(price) : 0)
-    }, 0), 0)
+    s + (inv.invoice_items || []).reduce((ss, item) => ss + itemRevenue(item), 0), 0)
 
   const totalCounteredValue = counterLogs.reduce((s, log) =>
     s + (log.counter_items || []).reduce((ss, item) => {
+      const rate = invoiceLineRate(item.invoice_id, item.product_id)
       const prod = products.find(p => p.id === item.product_id)
-      return ss + (prod?.unit_price ? Number(item.quantity) * Number(prod.unit_price) : 0)
+      const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
+      return ss + Number(item.quantity) * (rate != null ? rate : fallback)
     }, 0), 0)
 
   const totalPendingUnits = Object.values(availableByProduct).reduce((s, v) => s + v, 0)
@@ -412,8 +430,10 @@ export default function Countering() {
       (log.counter_items || []).map(ci => {
         const inv = consignInvoices.find(i => i.id === ci.invoice_id)
         const prod = products.find(p => p.id === ci.product_id)
-        const unitPrice = prod?.unit_price ? Number(prod.unit_price) : null
+        const rate = invoiceLineRate(ci.invoice_id, ci.product_id)
+        const fallbackPrice = prod?.unit_price ? Number(prod.unit_price) : null
         const quantity = Number(ci.quantity)
+        const unitPrice = rate != null ? rate : fallbackPrice
         return {
           id: ci.id,
           entry: log,
