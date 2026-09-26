@@ -175,7 +175,6 @@ export default function Reports() {
         const row = { 'Product': r.product, 'Unit': r.unit, 'Total Sold': r.total_sold, 'Cash': r.cash, 'Credit': r.credit, 'Consign': r.consign, 'Countered': r.countered, 'Remaining Consign': r.remainingConsign, 'Returns (Back)': r.returns_back, 'Returns (Loss)': r.returns_loss, 'Net Sold': net }
         if (r.unit_price) {
           row['Unit Price (₱)'] = r.unit_price
-          row['Revenue (₱)'] = net * Number(r.unit_price)
           row['Sales Discount (₱)'] = r.salesDiscount
           row['Net Revenue (₱)'] = r.netRevenue
         }
@@ -349,7 +348,7 @@ export default function Reports() {
                             <td className="td-qty">{r.returns_back.toLocaleString()}</td>
                             <td className="td-qty">{r.returns_loss.toLocaleString()}</td>
                             <td className="td-qty bold">{net.toLocaleString()} <span className="unit-label">{r.unit}</span></td>
-                            {hasPrice && <td className="td-qty" style={{color:'var(--green-text)'}}>{r.unit_price ? fmt(net * Number(r.unit_price)) : '—'}</td>}
+                            {hasPrice && <td className="td-qty" style={{color:'var(--green-text)'}}>{r.unit_price ? fmt(r.netRevenue) : '—'}</td>}
                           </tr>
                         )
                       })}
