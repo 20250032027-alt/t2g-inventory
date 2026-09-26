@@ -401,6 +401,15 @@ export default function Countering() {
       return ss + Number(item.quantity) * (rate != null ? rate : fallback)
     }, 0), 0)
 
+  // Value of consigned stock returned unsold — comes off the pending balance like a settlement would,
+  // but is never counted as sold/settled revenue.
+  const totalReturnedValue = consignReturns.reduce((s, r) => {
+    const rate = invoiceLineRate(r.invoice_id, r.product_id)
+    const prod = products.find(p => p.id === r.product_id)
+    const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
+    return s + Number(r.quantity) * (rate != null ? rate : fallback)
+  }, 0)
+
   const totalPendingUnits = Object.values(availableByProduct).reduce((s, v) => s + v, 0)
 
   // Audit table filtered by search
@@ -526,10 +535,16 @@ export default function Countering() {
               <span className="revenue-value" style={{ color: 'var(--green-text)' }}>{fmt(totalCounteredValue)}</span>
             </div>
           )}
+          {hasPrice && totalReturnedValue > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+              <span className="revenue-label">Returned Unsold</span>
+              <span className="revenue-value" style={{ color: 'var(--amber)', fontSize: '0.9em' }}>{fmt(totalReturnedValue)}</span>
+            </div>
+          )}
           {hasPrice && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
               <span className="revenue-label">Still Pending</span>
-              <span className="revenue-value" style={{ opacity: 0.55, fontSize: '0.9em' }}>{fmt(totalConsignValue - totalCounteredValue)}</span>
+              <span className="revenue-value" style={{ opacity: 0.55, fontSize: '0.9em' }}>{fmt(Math.max(0, totalConsignValue - totalCounteredValue - totalReturnedValue))}</span>
             </div>
           )}
         </div>

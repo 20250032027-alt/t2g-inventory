@@ -13,6 +13,7 @@ export default function Reports() {
   const [counterItems, setCounterItems] = useState([])
   const [allConsignInvoices, setAllConsignInvoices] = useState([])
   const [allCounterEntries, setAllCounterEntries] = useState([])
+  const [allConsignReturns, setAllConsignReturns] = useState([])
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState('summary')
   const [dateFrom, setDateFrom] = useState(CURRENT_MONTH + '-01')
@@ -38,7 +39,7 @@ export default function Reports() {
       prodQ = prodQ.eq('product_id', filterProduct)
     }
 
-    const [{ data: invs }, { data: r }, { data: p }, { data: prods }, { data: cEntries }, { data: consignInvs }, { data: allCEntries }] = await Promise.all([
+    const [{ data: invs }, { data: r }, { data: p }, { data: prods }, { data: cEntries }, { data: consignInvs }, { data: allCEntries }, { data: allCReturns }] = await Promise.all([
       invQ, retQ, prodQ,
       supabase.from('products').select('id, name, unit_price').order('name'),
       supabase.from('counter_entries')
@@ -50,7 +51,10 @@ export default function Reports() {
         .eq('payment_type', 'Consign')
         .order('date', { ascending: false }),
       supabase.from('counter_entries')
-        .select('invoice_id, counter_items(product_id, quantity)')
+        .select('invoice_id, counter_items(product_id, quantity)'),
+      supabase.from('return_entries')
+        .select('product_id, quantity')
+        .not('invoice_id', 'is', null),
     ])
 
     let filteredInvs = invs || []
@@ -67,6 +71,7 @@ export default function Reports() {
     setCounterItems(cEntries || [])
     setAllConsignInvoices(consignInvs || [])
     setAllCounterEntries(allCEntries || [])
+    setAllConsignReturns(allCReturns || [])
     setLoading(false)
   }
 
@@ -93,11 +98,19 @@ export default function Reports() {
   })
   returns.forEach(e => {
     const key = e.products?.name || 'Unknown'
-    if (!summaryMap[key]) summaryMap[key] = { product: key, unit: e.products?.unit, unit_price: null, total_sold: 0, cash: 0, credit: 0, consign: 0, returns_back: 0, returns_loss: 0, paidGross: 0, paidActual: 0, consignGross: 0, consignActual: 0 }
+    if (!summaryMap[key]) summaryMap[key] = { product: key, unit: e.products?.unit, unit_price: null, total_sold: 0, cash: 0, credit: 0, consign: 0, returns_back: 0, returns_loss: 0, returns_back_regular: 0, returns_loss_regular: 0, paidGross: 0, paidActual: 0, consignGross: 0, consignActual: 0 }
     if (!summaryMap[key].returns_back) summaryMap[key].returns_back = 0
     if (!summaryMap[key].returns_loss) summaryMap[key].returns_loss = 0
+    if (!summaryMap[key].returns_back_regular) summaryMap[key].returns_back_regular = 0
+    if (!summaryMap[key].returns_loss_regular) summaryMap[key].returns_loss_regular = 0
     if (e.restore_stock) summaryMap[key].returns_back += Number(e.quantity)
     else summaryMap[key].returns_loss += Number(e.quantity)
+    // Consign-linked returns come off the consign balance (see remainingConsign / pendingConsignRevenue below),
+    // not off cash/credit revenue — only non-consign returns net against paid revenue here.
+    if (!e.invoice_id) {
+      if (e.restore_stock) summaryMap[key].returns_back_regular += Number(e.quantity)
+      else summaryMap[key].returns_loss_regular += Number(e.quantity)
+    }
   })
   // Revenue: prefer stored amount override, else qty × unit_price
   function itemRevenue(item) {
@@ -145,6 +158,11 @@ export default function Reports() {
       allCounteredByProduct[pid] = (allCounteredByProduct[pid] || 0) + Number(ci.quantity)
     })
   })
+  // All-time returned (unsold, sent back) per product, for consign invoices — also comes off the balance
+  const allReturnedByProduct = {}
+  allConsignReturns.forEach(e => {
+    allReturnedByProduct[e.product_id] = (allReturnedByProduct[e.product_id] || 0) + Number(e.quantity)
+  })
   // All-time consigned per product
   const allConsignedByProduct = {}
   allConsignInvoices.forEach(inv => {
@@ -157,6 +175,8 @@ export default function Reports() {
     ...r,
     returns_back: r.returns_back || 0,
     returns_loss: r.returns_loss || 0,
+    returns_back_regular: r.returns_back_regular || 0,
+    returns_loss_regular: r.returns_loss_regular || 0,
     countered: counteredMap[r.product] || 0,
   })).map(r => {
     // Find product id to look up all-time remaining (and fall back to current price if this row came only from returns)
@@ -165,14 +185,17 @@ export default function Reports() {
     const unit_price = r.unit_price || prod?.unit_price || null
     const totalConsigned = pid ? (allConsignedByProduct[pid] || 0) : 0
     const totalCountered = pid ? (allCounteredByProduct[pid] || 0) : 0
+    const totalReturnedConsign = pid ? (allReturnedByProduct[pid] || 0) : 0
     // Sales Discount: gross sticker value (qty × unit price) minus what was actually charged (amount override), across every invoice line for this product
     const salesDiscount = (r.paidGross || 0) - (r.paidActual || 0) + (r.consignGross || 0) - (r.consignActual || 0)
-    // Net Revenue: actual cash/credit collected (after discount), minus returns, plus consign that's been settled/countered this period —
-    // valued at the real amount each settled unit was actually invoiced for, not the product's current list price.
-    const returnsValue = (r.returns_back + r.returns_loss) * Number(unit_price || 0)
+    // Net Revenue: actual cash/credit collected (after discount), minus returns of that paid stock, plus consign that's
+    // been settled/countered this period — valued at the real amount each settled unit was actually invoiced for.
+    // Returns of unsold CONSIGN stock never counted as revenue in the first place, so they don't net out here —
+    // they instead reduce the outstanding consign balance (remainingConsign / Consign (pending), below).
+    const returnsValue = (r.returns_back_regular + r.returns_loss_regular) * Number(unit_price || 0)
     const settledConsignRevenue = counteredDollarMap[r.product] || 0
     const netRevenue = (r.paidActual || 0) - returnsValue + settledConsignRevenue
-    return { ...r, unit_price, remainingConsign: Math.max(0, totalConsigned - totalCountered), salesDiscount, netRevenue }
+    return { ...r, unit_price, remainingConsign: Math.max(0, totalConsigned - totalCountered - totalReturnedConsign), salesDiscount, netRevenue }
   })
 
   const totalSold = allItems.reduce((s, i) => s + Number(i.quantity), 0)
@@ -186,8 +209,17 @@ export default function Reports() {
   const settledConsignRevenue = counterItems
     .flatMap(entry => entry.counter_items || [])
     .reduce((s, ci) => s + settledDollarValue(ci), 0)
+  // Value of consigned stock returned unsold this period — comes off the pending balance, same as a settlement would,
+  // but is never counted as revenue (it was never sold).
+  const returnedConsignValue = returns
+    .filter(e => e.invoice_id)
+    .reduce((s, e) => {
+      const rate = invoiceLineRate(e.invoice_id, e.product_id)
+      const fallback = e.products?.unit_price ? Number(e.products.unit_price) : 0
+      return s + Number(e.quantity) * (rate != null ? rate : fallback)
+    }, 0)
   const effectivePaidRevenue = paidRevenue + settledConsignRevenue
-  const pendingConsignRevenue = Math.max(0, rawConsignRevenue - settledConsignRevenue)
+  const pendingConsignRevenue = Math.max(0, rawConsignRevenue - settledConsignRevenue - returnedConsignValue)
 
   function exportExcel() {
     const wb = XLSX.utils.book_new()
