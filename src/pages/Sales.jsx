@@ -433,6 +433,19 @@ export default function Sales() {
       .reduce((s, ci) => s + Number(ci.quantity), 0)
   }
 
+  // The real per-unit rate a specific consign invoice's product line was sold at
+  // (accounts for any discount/premium on that invoice) — used to value settled quantities
+  // accurately instead of the product's current list price.
+  function invoiceLineRate(invoiceId, productId) {
+    const inv = invoices.find(i => i.id === invoiceId)
+    if (!inv) return null
+    const items = (inv.invoice_items || []).filter(it => it.product_id === productId)
+    const totalQty = items.reduce((s, it) => s + Number(it.quantity), 0)
+    if (totalQty === 0) return null
+    const totalAmt = items.reduce((s, it) => s + itemRevenue(it), 0)
+    return totalAmt / totalQty
+  }
+
   // Settlement status for Consign invoices (Cash/Credit are settled at the point of sale, no concept applies)
   function invoiceSettlementStatus(inv) {
     if (inv.payment_type !== 'Consign') return null
@@ -468,13 +481,16 @@ export default function Sales() {
   }
 
   // Settled consign: counter_items that drew from invoices in the current filtered view,
-  // narrowed to the filtered product(s) too.
+  // narrowed to the filtered product(s) too. Valued at each settlement's real originating
+  // invoice rate (premium/discount included), not the product's current list price.
   const filteredInvoiceIds = new Set(filtered.map(inv => inv.id))
   const settledConsignRevenue = counterItems
     .filter(ci => filteredInvoiceIds.has(ci.invoice_id) && (filterProductIds.length === 0 || filterProductIds.includes(ci.product_id)))
     .reduce((s, ci) => {
+      const rate = invoiceLineRate(ci.invoice_id, ci.product_id)
       const prod = products.find(p => p.id === ci.product_id)
-      return s + (prod?.unit_price ? Number(ci.quantity) * Number(prod.unit_price) : 0)
+      const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
+      return s + Number(ci.quantity) * (rate != null ? rate : fallback)
     }, 0)
 
   const paidRevenue = filtered.filter(inv => inv.payment_type !== 'Consign').reduce((s, inv) => s + filteredItemsRevenue(inv), 0)
