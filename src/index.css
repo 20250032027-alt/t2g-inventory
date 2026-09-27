@@ -322,6 +322,25 @@ input:focus, select:focus {
 }
 input::placeholder { color: var(--text-3); }
 
+/* Checkboxes shouldn't inherit the text-input look above — that removed the native
+   checkmark entirely (appearance: none) and left a mostly-invisible toggle with only a
+   focus glow to show state, no visible checked/unchecked difference. */
+input[type="checkbox"] {
+  appearance: auto;
+  width: 17px;
+  height: 17px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  background: var(--surface-2);
+  accent-color: var(--green);
+  flex-shrink: 0;
+}
+input[type="checkbox"]:focus {
+  box-shadow: 0 0 0 3px var(--green-dim);
+}
+
 .select-wrap { position: relative; }
 .select-wrap select { padding-right: 34px; cursor: pointer; }
 .select-icon { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }

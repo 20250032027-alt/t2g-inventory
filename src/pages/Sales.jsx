@@ -75,7 +75,6 @@ export default function Sales() {
   const [products, setProducts] = useState([])
   const [counterItems, setCounterItems] = useState([])
   const [consignReturns, setConsignReturns] = useState([]) // return_entries tied to a consign invoice
-  const [allConsignInvoices, setAllConsignInvoices] = useState([]) // ALL consign invoices, uncapped — for the pending balance (a running total, not just the recent 300)
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [expandedIds, setExpandedIds] = useState(new Set())
@@ -131,23 +130,18 @@ export default function Sales() {
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: prods }, { data: invs }, { data: cItems }, { data: cReturns }, { data: allConsignInvs }] = await Promise.all([
+    const [{ data: prods }, { data: invs }, { data: cItems }, { data: cReturns }] = await Promise.all([
       supabase.from('products').select('id, name, unit, unit_price').order('name'),
       supabase.from('invoices')
         .select('*, invoice_items(*, products(id, name, unit, unit_price))')
-        .order('date', { ascending: false })
-        .limit(300),
+        .order('date', { ascending: false }),
       supabase.from('counter_items').select('product_id, quantity, invoice_id, invoices(payment_type)'),
       supabase.from('return_entries').select('invoice_id, product_id, quantity').not('invoice_id', 'is', null),
-      supabase.from('invoices')
-        .select('id, invoice_items(product_id, quantity, amount, products(id, name, unit, unit_price))')
-        .eq('payment_type', 'Consign'),
     ])
     setProducts(prods || [])
     setInvoices(invs || [])
     setCounterItems(cItems || [])
     setConsignReturns(cReturns || [])
-    setAllConsignInvoices(allConsignInvs || [])
     setLoading(false)
   }
 
@@ -461,7 +455,7 @@ export default function Sales() {
   // (accounts for any discount/premium on that invoice) — used to value settled quantities
   // accurately instead of the product's current list price.
   function invoiceLineRate(invoiceId, productId) {
-    const inv = invoices.find(i => i.id === invoiceId) || allConsignInvoices.find(i => i.id === invoiceId)
+    const inv = invoices.find(i => i.id === invoiceId)
     if (!inv) return null
     const items = (inv.invoice_items || []).filter(it => it.product_id === productId)
     const totalQty = items.reduce((s, it) => s + Number(it.quantity), 0)
@@ -523,11 +517,12 @@ export default function Sales() {
 
   // "Consign (pending)" is a running BALANCE, not tied to what happens to be in the visible/recent invoice list —
   // a consignment issued a while back that's still unsettled is still genuinely outstanding today. So unlike the
-  // figure above, this always uses the complete, uncapped consign data (same source as Reports and Countering),
-  // narrowed only by the product filter (if any) — never by search text, payment filter, or the 300-invoice cap.
+  // figure above, this always uses every Consign invoice (never scoped by the 300-invoice cap, since there isn't
+  // one anymore), narrowed only by the product filter (if any) — never by search text or payment filter.
+  const allConsignInvoicesForPending = invoices.filter(inv => inv.payment_type === 'Consign')
   const pendingConsignInvoices = filterProductIds.length === 0
-    ? allConsignInvoices
-    : allConsignInvoices.filter(inv => inv.invoice_items?.some(it => filterProductIds.includes(it.product_id)))
+    ? allConsignInvoicesForPending
+    : allConsignInvoicesForPending.filter(inv => inv.invoice_items?.some(it => filterProductIds.includes(it.product_id)))
   const allTimeConsignValue = pendingConsignInvoices.reduce((s, inv) =>
     s + (inv.invoice_items || []).filter(itemMatchesProductFilter).reduce((ss, item) => ss + itemRevenue(item), 0), 0)
   const pendingInvoiceIds = new Set(pendingConsignInvoices.map(inv => inv.id))
