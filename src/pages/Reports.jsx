@@ -226,6 +226,23 @@ export default function Reports() {
     .reduce((s, ci) => s + settledDollarValue(ci), 0)
   const effectivePaidRevenue = paidRevenue + settledConsignRevenue
 
+  // Consign activity WITHIN the selected period — a FLOW, not a balance. Answers "how much pending
+  // did we gain or resolve between From and To", as opposed to Consign (pending) below which answers
+  // "how much is outstanding as of To". New consignments raise the balance; settlements and returns
+  // (both dated within the period) lower it — net > 0 means pending grew this period, net < 0 means
+  // it shrank (more got resolved than newly consigned).
+  const newConsignedThisPeriod = allItems
+    .filter(item => item.invoice?.payment_type === 'Consign')
+    .reduce((s, item) => s + itemRevenue(item), 0)
+  const returnedConsignThisPeriod = returns
+    .filter(e => e.invoice_id)
+    .reduce((s, e) => {
+      const rate = invoiceLineRate(e.invoice_id, e.product_id)
+      const fallback = e.products?.unit_price ? Number(e.products.unit_price) : 0
+      return s + Number(e.quantity) * (rate != null ? rate : fallback)
+    }, 0)
+  const netConsignChangeThisPeriod = newConsignedThisPeriod - settledConsignRevenue - returnedConsignThisPeriod
+
   // Consign (pending), as of the selected "To" date.
   const allTimeConsignValue = consignInvoicesAsOf.reduce((s, inv) =>
     s + (inv.invoice_items || []).reduce((ss, item) => ss + itemRevenue(item), 0), 0)
@@ -407,6 +424,17 @@ export default function Reports() {
             <div className="stat-card"><div className="stat-label">Net Sold</div><div className="stat-value">{(totalSold - totalReturns).toLocaleString()}</div></div>
             {hasPrice && <div className="stat-card" style={{borderColor:'rgba(34,197,94,0.3)'}}><div className="stat-label" style={{color:'var(--green-text)'}}>Revenue (incl. Settled)</div><div className="stat-value" style={{color:'var(--green-text)'}}>{fmt(effectivePaidRevenue)}</div></div>}
             {hasPrice && pendingConsignRevenue > 0 && <div className="stat-card" title={`Total still outstanding across all consign invoices, as of ${dateTo} — this responds to the "To" date (a balance as of that day), but not "From" (a balance has no start date, only an as-of date).`}><div className="stat-label" style={{opacity:0.6}}>Consign (pending) <span style={{fontSize:'0.7em', opacity:0.7}}>· as of {dateTo}</span></div><div className="stat-value" style={{opacity:0.55}}>{fmt(pendingConsignRevenue)}</div></div>}
+            {hasPrice && (newConsignedThisPeriod > 0 || settledConsignRevenue > 0 || returnedConsignThisPeriod > 0) && (
+              <div
+                className="stat-card"
+                title={`Between ${dateFrom} and ${dateTo}: +${fmt(newConsignedThisPeriod)} newly consigned, -${fmt(settledConsignRevenue)} settled (sold), -${fmt(returnedConsignThisPeriod)} returned unsold. This is how much the pending balance moved during this period — not the balance itself.`}
+              >
+                <div className="stat-label" style={{opacity:0.6}}>Consign Activity <span style={{fontSize:'0.7em', opacity:0.7}}>· this period</span></div>
+                <div className="stat-value" style={{color: netConsignChangeThisPeriod > 0 ? 'var(--amber)' : netConsignChangeThisPeriod < 0 ? 'var(--green-text)' : undefined, opacity: 0.85}}>
+                  {netConsignChangeThisPeriod > 0 ? '+' : ''}{fmt(netConsignChangeThisPeriod)}
+                </div>
+              </div>
+            )}
           </div>
 
           {mode === 'summary' ? (
