@@ -171,8 +171,15 @@ export default function Reports() {
   // entirely — a consignment issued before "From" that's still unsettled is still genuinely
   // outstanding as of "To", the same way a bank balance doesn't have a start date, only an as-of date.
   const consignInvoicesAsOf = allConsignInvoices.filter(inv => inv.date <= dateTo)
-  const counterEntriesAsOf = allCounterEntries.filter(entry => entry.date <= dateTo)
-  const consignReturnsAsOf = allConsignReturns.filter(e => e.date <= dateTo)
+  // Only settlements/returns tied to an invoice CURRENTLY classified as Consign count here — if an
+  // invoice was later edited away from Consign, its old settlement shouldn't still be subtracted from
+  // a pool it's no longer part of (that would silently understate pending without the matching
+  // consigned amount ever being counted). This mirrors the stricter filtering Sales.jsx already uses.
+  const consignInvoiceIds = new Set(allConsignInvoices.map(inv => inv.id))
+  const counterEntriesAsOf = allCounterEntries
+    .filter(entry => entry.date <= dateTo)
+    .map(entry => ({ ...entry, counter_items: (entry.counter_items || []).filter(ci => consignInvoiceIds.has(ci.invoice_id)) }))
+  const consignReturnsAsOf = allConsignReturns.filter(e => e.date <= dateTo && consignInvoiceIds.has(e.invoice_id))
 
   // Countered per product, as of the selected "To" date (for the per-product remaining-consign column)
   const allCounteredByProduct = {}
