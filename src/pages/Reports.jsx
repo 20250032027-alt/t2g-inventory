@@ -51,9 +51,9 @@ export default function Reports() {
         .eq('payment_type', 'Consign')
         .order('date', { ascending: false }),
       supabase.from('counter_entries')
-        .select('invoice_id, counter_items(product_id, quantity)'),
+        .select('counter_items(product_id, quantity, invoice_id)'),
       supabase.from('return_entries')
-        .select('product_id, quantity')
+        .select('invoice_id, product_id, quantity')
         .not('invoice_id', 'is', null),
     ])
 
@@ -201,25 +201,31 @@ export default function Reports() {
   const totalSold = allItems.reduce((s, i) => s + Number(i.quantity), 0)
   const totalReturns = returns.reduce((s, e) => s + Number(e.quantity), 0)
   const totalProduced = production.reduce((s, e) => s + Number(e.quantity), 0)
-  // Revenue (excl. Consign): real collected money. Consign sales are pending, tracked separately.
+  // Revenue (excl. Consign): real collected money, for the selected period. Consign sales are pending, tracked separately.
   const paidRevenue = allItems.filter(item => item.invoice?.payment_type !== 'Consign').reduce((s, item) => s + itemRevenue(item), 0)
-  const rawConsignRevenue = allItems.filter(item => item.invoice?.payment_type === 'Consign').reduce((s, item) => s + itemRevenue(item), 0)
-  // Settled consign: all counter entries within the date range (regardless of when the original consign invoice was created),
-  // valued at each settlement's real originating invoice rate.
+  // Settled consign THIS PERIOD: revenue recognized when a settlement happens within the selected date range
+  // (regardless of when the original consign invoice was created), valued at its real originating invoice rate.
   const settledConsignRevenue = counterItems
     .flatMap(entry => entry.counter_items || [])
     .reduce((s, ci) => s + settledDollarValue(ci), 0)
-  // Value of consigned stock returned unsold this period — comes off the pending balance, same as a settlement would,
-  // but is never counted as revenue (it was never sold).
-  const returnedConsignValue = returns
-    .filter(e => e.invoice_id)
-    .reduce((s, e) => {
-      const rate = invoiceLineRate(e.invoice_id, e.product_id)
-      const fallback = e.products?.unit_price ? Number(e.products.unit_price) : 0
-      return s + Number(e.quantity) * (rate != null ? rate : fallback)
-    }, 0)
   const effectivePaidRevenue = paidRevenue + settledConsignRevenue
-  const pendingConsignRevenue = Math.max(0, rawConsignRevenue - settledConsignRevenue - returnedConsignValue)
+
+  // Consign (pending) is a running BALANCE, not a period figure — a consignment issued before "From"
+  // that's still unsettled is still genuinely outstanding today. So unlike the stats above, this is
+  // always computed from the complete, all-time consign data (same source as the per-product
+  // "Remaining Consign" column and the Countering page), never scoped to the selected date range.
+  const allTimeConsignValue = allConsignInvoices.reduce((s, inv) =>
+    s + (inv.invoice_items || []).reduce((ss, item) => ss + itemRevenue(item), 0), 0)
+  const allTimeSettledValue = allCounterEntries
+    .flatMap(entry => entry.counter_items || [])
+    .reduce((s, ci) => s + settledDollarValue(ci), 0)
+  const allTimeReturnedValue = allConsignReturns.reduce((s, e) => {
+    const rate = invoiceLineRate(e.invoice_id, e.product_id)
+    const prod = products.find(p => p.id === e.product_id)
+    const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
+    return s + Number(e.quantity) * (rate != null ? rate : fallback)
+  }, 0)
+  const pendingConsignRevenue = Math.max(0, allTimeConsignValue - allTimeSettledValue - allTimeReturnedValue)
 
   function exportExcel() {
     const wb = XLSX.utils.book_new()
@@ -250,7 +256,17 @@ export default function Reports() {
         })
       )
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(invoiceRows), 'Sales Detail')
-      const returnRows = returns.map(e => ({ 'Date': e.date, 'Reference #': e.reference_no || '', 'Client': e.client || '', 'Product': e.products?.name, 'Quantity': e.quantity, 'Unit': e.products?.unit, 'Reason': e.reason, 'Stock Action': e.restore_stock ? 'Returned to Stock' : 'Written Off', 'Notes': e.notes || '' }))
+      const returnRows = returns.map(e => {
+        // For a consigned return, value it at the real rate that specific invoice line was sold at;
+        // otherwise fall back to the product's current unit price.
+        const rate = e.invoice_id ? invoiceLineRate(e.invoice_id, e.product_id) : null
+        const prod = products.find(p => p.id === e.product_id)
+        const fallback = prod?.unit_price ? Number(prod.unit_price) : null
+        const unitAmt = rate != null ? rate : fallback
+        const row = { 'Date': e.date, 'Reference #': e.reference_no || '', 'Client': e.client || '', 'Product': e.products?.name, 'Quantity': e.quantity, 'Unit': e.products?.unit, 'Reason': e.reason, 'Stock Action': e.restore_stock ? 'Returned to Stock' : 'Written Off', 'Consigned': e.invoice_id ? 'Yes' : 'No', 'Notes': e.notes || '' }
+        if (unitAmt != null) row['Amount (₱)'] = Number(e.quantity) * unitAmt
+        return row
+      })
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(returnRows), 'Returns')
       const counterRows = counterItems.flatMap(entry =>
         (entry.counter_items || []).map(ci => ({

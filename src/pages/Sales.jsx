@@ -75,6 +75,7 @@ export default function Sales() {
   const [products, setProducts] = useState([])
   const [counterItems, setCounterItems] = useState([])
   const [consignReturns, setConsignReturns] = useState([]) // return_entries tied to a consign invoice
+  const [allConsignInvoices, setAllConsignInvoices] = useState([]) // ALL consign invoices, uncapped — for the pending balance (a running total, not just the recent 300)
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [expandedIds, setExpandedIds] = useState(new Set())
@@ -125,7 +126,7 @@ export default function Sales() {
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: prods }, { data: invs }, { data: cItems }, { data: cReturns }] = await Promise.all([
+    const [{ data: prods }, { data: invs }, { data: cItems }, { data: cReturns }, { data: allConsignInvs }] = await Promise.all([
       supabase.from('products').select('id, name, unit, unit_price').order('name'),
       supabase.from('invoices')
         .select('*, invoice_items(*, products(id, name, unit, unit_price))')
@@ -133,11 +134,15 @@ export default function Sales() {
         .limit(300),
       supabase.from('counter_items').select('product_id, quantity, invoice_id, invoices(payment_type)'),
       supabase.from('return_entries').select('invoice_id, product_id, quantity').not('invoice_id', 'is', null),
+      supabase.from('invoices')
+        .select('id, invoice_items(product_id, quantity, amount, products(id, name, unit, unit_price))')
+        .eq('payment_type', 'Consign'),
     ])
     setProducts(prods || [])
     setInvoices(invs || [])
     setCounterItems(cItems || [])
     setConsignReturns(cReturns || [])
+    setAllConsignInvoices(allConsignInvs || [])
     setLoading(false)
   }
 
@@ -440,7 +445,7 @@ export default function Sales() {
   // (accounts for any discount/premium on that invoice) — used to value settled quantities
   // accurately instead of the product's current list price.
   function invoiceLineRate(invoiceId, productId) {
-    const inv = invoices.find(i => i.id === invoiceId)
+    const inv = invoices.find(i => i.id === invoiceId) || allConsignInvoices.find(i => i.id === invoiceId)
     if (!inv) return null
     const items = (inv.invoice_items || []).filter(it => it.product_id === productId)
     const totalQty = items.reduce((s, it) => s + Number(it.quantity), 0)
@@ -497,20 +502,36 @@ export default function Sales() {
     }, 0)
 
   const paidRevenue = filtered.filter(inv => inv.payment_type !== 'Consign').reduce((s, inv) => s + filteredItemsRevenue(inv), 0)
-  const rawConsignRevenue = filtered.filter(inv => inv.payment_type === 'Consign').reduce((s, inv) => s + filteredItemsRevenue(inv), 0)
-  // Value of consigned stock that's come back unsold, for invoices in the current filtered view — comes off the
-  // pending balance same as a settlement would, but is never added to revenue since it was never sold.
-  const returnedConsignValue = consignReturns
-    .filter(e => filteredInvoiceIds.has(e.invoice_id) && (filterProductIds.length === 0 || filterProductIds.includes(e.product_id)))
+  // "Revenue (incl. Settled)" reflects what's currently visible/filtered (a quick glance at what you searched for).
+  const effectivePaidRevenue = paidRevenue + settledConsignRevenue
+
+  // "Consign (pending)" is a running BALANCE, not tied to what happens to be in the visible/recent invoice list —
+  // a consignment issued a while back that's still unsettled is still genuinely outstanding today. So unlike the
+  // figure above, this always uses the complete, uncapped consign data (same source as Reports and Countering),
+  // narrowed only by the product filter (if any) — never by search text, payment filter, or the 300-invoice cap.
+  const pendingConsignInvoices = filterProductIds.length === 0
+    ? allConsignInvoices
+    : allConsignInvoices.filter(inv => inv.invoice_items?.some(it => filterProductIds.includes(it.product_id)))
+  const allTimeConsignValue = pendingConsignInvoices.reduce((s, inv) =>
+    s + (inv.invoice_items || []).filter(itemMatchesProductFilter).reduce((ss, item) => ss + itemRevenue(item), 0), 0)
+  const pendingInvoiceIds = new Set(pendingConsignInvoices.map(inv => inv.id))
+  const allTimeSettledValue = counterItems
+    .filter(ci => pendingInvoiceIds.has(ci.invoice_id) && (filterProductIds.length === 0 || filterProductIds.includes(ci.product_id)))
+    .reduce((s, ci) => {
+      const rate = invoiceLineRate(ci.invoice_id, ci.product_id)
+      const prod = products.find(p => p.id === ci.product_id)
+      const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
+      return s + Number(ci.quantity) * (rate != null ? rate : fallback)
+    }, 0)
+  const allTimeReturnedValue = consignReturns
+    .filter(e => pendingInvoiceIds.has(e.invoice_id) && (filterProductIds.length === 0 || filterProductIds.includes(e.product_id)))
     .reduce((s, e) => {
       const rate = invoiceLineRate(e.invoice_id, e.product_id)
       const prod = products.find(p => p.id === e.product_id)
       const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
       return s + Number(e.quantity) * (rate != null ? rate : fallback)
     }, 0)
-  // settled consign moves into real revenue; only unsettled, unreturned portion stays pending
-  const effectivePaidRevenue = paidRevenue + settledConsignRevenue
-  const pendingConsignRevenue = Math.max(0, rawConsignRevenue - settledConsignRevenue - returnedConsignValue)
+  const pendingConsignRevenue = Math.max(0, allTimeConsignValue - allTimeSettledValue - allTimeReturnedValue)
 
   return (
     <div className="page">
