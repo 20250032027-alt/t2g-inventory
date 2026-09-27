@@ -305,7 +305,7 @@ export default function RawMaterials() {
                     <tr key={m.id}>
                       <td className="td-name">{m.name}</td>
                       <td><span className="badge">{m.unit}</span></td>
-                      <td className="td-qty">{m.unit_cost != null ? `₱${Number(m.unit_cost).toLocaleString('en-PH', { minimumFractionDigits: 2 })}` : '—'}</td>
+                      <td className="td-qty">{m.unit_cost != null ? `₱${Number(m.unit_cost).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}</td>
                       <td className="td-qty">{(Number(m.opening_stock) || 0).toLocaleString()} <span className="unit-label">{m.unit}</span></td>
                       <td className="td-qty bold">{stock.toLocaleString()} <span className="unit-label">{m.unit}</span></td>
                       <td>{stock < 0 ? <span className="badge badge-red">Oversold</span> : stock < 10 ? <span className="badge badge-amber">Low</span> : <span className="badge badge-green">In Stock</span>}</td>

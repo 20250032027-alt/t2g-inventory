@@ -11,53 +11,23 @@ export default function Inventory({ setPage }) {
 
   async function fetchStock() {
     setLoading(true)
-    const [{ data: products }, { data: production }, { data: items }, { data: returns }, { data: cItems }, { data: consignInvs }] = await Promise.all([
+    const [{ data: products }, { data: production }, { data: items }, { data: returns }, { data: cItems }] = await Promise.all([
       supabase.from('products').select('id, name, unit, unit_price, opening_stock').order('name'),
       supabase.from('production_entries').select('product_id, quantity'),
       supabase.from('invoice_items').select('product_id, quantity, amount, invoices(id, payment_type)'),
-      supabase.from('return_entries').select('product_id, quantity, restore_stock, invoice_id'),
+      supabase.from('return_entries').select('product_id, quantity, restore_stock'),
       supabase.from('counter_items').select('product_id, quantity, invoice_id'),
-      supabase.from('invoices').select('id, invoice_items(product_id, quantity, amount)').eq('payment_type', 'Consign'),
     ])
 
     const priceMap = {}
     ;(products || []).forEach(p => { priceMap[p.id] = p.unit_price })
 
-    // Actual amount an invoice line was sold for (respects any discount/premium override), not list price.
-    function lineRevenue(item) {
-      if (item.amount != null) return Number(item.amount)
-      const price = priceMap[item.product_id]
-      return price ? Number(item.quantity) * Number(price) : 0
-    }
-
-    // The real per-unit rate a specific consign invoice's product line was sold at —
-    // used to value settled/returned quantities accurately instead of the product's current list price.
-    function invoiceLineRate(invoiceId, productId) {
-      const inv = (consignInvs || []).find(i => i.id === invoiceId)
-      if (!inv) return null
-      const lines = (inv.invoice_items || []).filter(it => it.product_id === productId)
-      const totalQty = lines.reduce((s, it) => s + Number(it.quantity), 0)
-      if (totalQty === 0) return null
-      const totalAmt = lines.reduce((s, it) => s + lineRevenue(it), 0)
-      return totalAmt / totalQty
-    }
-
-    // Settled consign per product (from counter_items), valued at each settlement's real
-    // originating invoice rate — not the product's current list price.
+    // Settled consign per product (from counter_items)
     const settledMap = {}
     ;(cItems || []).forEach(ci => {
-      const rate = invoiceLineRate(ci.invoice_id, ci.product_id)
-      const fallback = priceMap[ci.product_id] ? Number(priceMap[ci.product_id]) : 0
-      settledMap[ci.product_id] = (settledMap[ci.product_id] || 0) + Number(ci.quantity) * (rate != null ? rate : fallback)
-    })
-
-    // Consigned stock returned unsold per product — comes off the pending balance like a
-    // settlement would, but is never counted as revenue (it was never sold).
-    const returnedConsignMap = {}
-    ;(returns || []).filter(e => e.invoice_id).forEach(e => {
-      const rate = invoiceLineRate(e.invoice_id, e.product_id)
-      const fallback = priceMap[e.product_id] ? Number(priceMap[e.product_id]) : 0
-      returnedConsignMap[e.product_id] = (returnedConsignMap[e.product_id] || 0) + Number(e.quantity) * (rate != null ? rate : fallback)
+      const price = priceMap[ci.product_id]
+      const rev = price ? Number(ci.quantity) * Number(price) : 0
+      settledMap[ci.product_id] = (settledMap[ci.product_id] || 0) + rev
     })
 
     const prodMap = {}, salesMap = {}, returnMap = {}, revenueMap = {}, consignRevenueMap = {}
@@ -82,7 +52,6 @@ export default function Inventory({ setPage }) {
       const sold = salesMap[p.id] || 0
       const returned = returnMap[p.id] || 0
       const settled = settledMap[p.id] || 0
-      const returnedConsign = returnedConsignMap[p.id] || 0
       const rawConsign = consignRevenueMap[p.id] || 0
       return {
         ...p,
@@ -92,8 +61,7 @@ export default function Inventory({ setPage }) {
         stock: opening + produced - sold + returned,
         // Revenue includes Cash/Credit + settled consign
         revenue: p.unit_price ? (revenueMap[p.id] || 0) + settled : null,
-        // Only the unsettled, un-returned portion is still genuinely pending
-        consignRevenue: Math.max(0, rawConsign - settled - returnedConsign),
+        consignRevenue: Math.max(0, rawConsign - settled), // only unsettled portion is pending
       }
     })
 
@@ -109,7 +77,7 @@ export default function Inventory({ setPage }) {
   const hasAnyPrice = stock.some(p => p.unit_price)
   const alertCount = stock.filter(p => p.stock < 10).length
   const displayStock = filterLow ? stock.filter(p => p.stock < 10) : stock
-  const fmt = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2 })}`
+  const fmt = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   const statCards = [
     { label: 'Products', value: totalProducts, icon: <Package size={18} />, iconClass: '', page: 'products', hint: 'Manage catalog' },

@@ -436,7 +436,7 @@ export default function Sales() {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [])
 
-  const fmt = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2 })}`
+  const fmt = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const hasPrice = products.some(p => p.unit_price)
 
   // Revenue: prefer stored amount override, else qty × unit_price
@@ -629,8 +629,8 @@ export default function Sales() {
               <span className="filter-revenue-value">{fmt(effectivePaidRevenue)}</span>
             </div>
             {pendingConsignRevenue > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                <span className="filter-revenue-label" style={{ opacity: 0.6 }}>Consign (pending)</span>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }} title="This is the total still outstanding across ALL consign invoices, right now — it does not change with search or product filters, since a balance like this isn't tied to what's currently visible.">
+                <span className="filter-revenue-label" style={{ opacity: 0.6 }}>Consign (pending) <span style={{fontSize:'0.85em', opacity:0.8}}>· all-time</span></span>
                 <span className="filter-revenue-value" style={{ opacity: 0.55, fontSize: '0.9em' }}>{fmt(pendingConsignRevenue)}</span>
               </div>
             )}

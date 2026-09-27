@@ -247,11 +247,11 @@ export default function TapperIntake() {
             </div>
             <div className="stat-card">
               <div className="stat-icon amber"><Check size={16} /></div>
-              <div><div className="stat-label">Total Amount</div><div className="stat-value">₱{totals.amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</div></div>
+              <div><div className="stat-label">Total Amount</div><div className="stat-value">₱{totals.amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>
             </div>
             <div className="stat-card">
               <div className="stat-icon red"><X size={16} /></div>
-              <div><div className="stat-label">Unpaid</div><div className="stat-value">₱{totals.unpaid.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</div></div>
+              <div><div className="stat-label">Unpaid</div><div className="stat-value">₱{totals.unpaid.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div></div>
             </div>
           </div>
 
@@ -299,14 +299,14 @@ export default function TapperIntake() {
                         <td className="td-name">{r.name}</td>
                         <td className="td-qty">{r.sap.toLocaleString()}</td>
                         <td className="td-qty">{r.recovery.toLocaleString()}</td>
-                        <td className="td-qty bold">₱{r.amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</td>
+                        <td className="td-qty bold">₱{r.amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       </tr>
                     ))}
                     <tr style={{ fontWeight: 700 }}>
                       <td className="td-name">TOTAL</td>
                       <td className="td-qty">{totals.sap.toLocaleString()}</td>
                       <td className="td-qty">{totals.recovery.toLocaleString()}</td>
-                      <td className="td-qty">₱{totals.amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</td>
+                      <td className="td-qty">₱{totals.amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -330,7 +330,7 @@ export default function TapperIntake() {
                         <td className="td-qty">{Number(entry.sap_received_kg).toLocaleString()} kg</td>
                         <td className="td-qty">{Number(entry.recovery_kg).toLocaleString()} kg</td>
                         <td className="td-qty">₱{Number(entry.rate_per_kg).toLocaleString()}</td>
-                        <td className="td-qty bold">₱{amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</td>
+                        <td className="td-qty bold">₱{amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         <td>
                           <button className="icon-btn" onClick={() => togglePaid(entry)} title="Toggle paid status" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                             {entry.is_paid
@@ -453,7 +453,7 @@ export default function TapperIntake() {
                 </div>
                 <div className="field-group">
                   <label>Amount</label>
-                  <input value={`₱${computedAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`} disabled />
+                  <input value={`₱${computedAmount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} disabled />
                 </div>
               </div>
               <div className="field-group">

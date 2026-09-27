@@ -68,7 +68,7 @@ export default function Products() {
     fetchProducts()
   }
 
-  const fmt = (n) => n != null ? `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2 })}` : '—'
+  const fmt = (n) => n != null ? `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'
 
   const filteredProducts = products.filter(p => {
     if (!search.trim()) return true
