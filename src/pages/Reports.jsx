@@ -58,9 +58,9 @@ export default function Reports() {
         .eq('payment_type', 'Consign')
         .order('date', { ascending: false }),
       supabase.from('counter_entries')
-        .select('counter_items(product_id, quantity, invoice_id)'),
+        .select('date, counter_items(product_id, quantity, invoice_id)'),
       supabase.from('return_entries')
-        .select('invoice_id, product_id, quantity')
+        .select('date, invoice_id, product_id, quantity')
         .not('invoice_id', 'is', null),
     ])
 
@@ -157,22 +157,31 @@ export default function Reports() {
     })
   })
 
-  // All-time countered per product (for remaining consign balance — unaffected by date filter)
+  // "Consign (pending)" is a running BALANCE, not a period figure — but a balance still has a
+  // meaningful cutoff: what was outstanding AS OF a given date. So this uses the "To" date as that
+  // cutoff (only invoices/settlements/returns dated on or before it count), while ignoring "From"
+  // entirely — a consignment issued before "From" that's still unsettled is still genuinely
+  // outstanding as of "To", the same way a bank balance doesn't have a start date, only an as-of date.
+  const consignInvoicesAsOf = allConsignInvoices.filter(inv => inv.date <= dateTo)
+  const counterEntriesAsOf = allCounterEntries.filter(entry => entry.date <= dateTo)
+  const consignReturnsAsOf = allConsignReturns.filter(e => e.date <= dateTo)
+
+  // Countered per product, as of the selected "To" date (for the per-product remaining-consign column)
   const allCounteredByProduct = {}
-  allCounterEntries.forEach(entry => {
+  counterEntriesAsOf.forEach(entry => {
     (entry.counter_items || []).forEach(ci => {
       const pid = ci.product_id
       allCounteredByProduct[pid] = (allCounteredByProduct[pid] || 0) + Number(ci.quantity)
     })
   })
-  // All-time returned (unsold, sent back) per product, for consign invoices — also comes off the balance
+  // Returned (unsold, sent back) per product as of "To" — also comes off the balance
   const allReturnedByProduct = {}
-  allConsignReturns.forEach(e => {
+  consignReturnsAsOf.forEach(e => {
     allReturnedByProduct[e.product_id] = (allReturnedByProduct[e.product_id] || 0) + Number(e.quantity)
   })
-  // All-time consigned per product
+  // Consigned per product as of "To"
   const allConsignedByProduct = {}
-  allConsignInvoices.forEach(inv => {
+  consignInvoicesAsOf.forEach(inv => {
     (inv.invoice_items || []).forEach(item => {
       allConsignedByProduct[item.product_id] = (allConsignedByProduct[item.product_id] || 0) + Number(item.quantity)
     })
@@ -217,16 +226,13 @@ export default function Reports() {
     .reduce((s, ci) => s + settledDollarValue(ci), 0)
   const effectivePaidRevenue = paidRevenue + settledConsignRevenue
 
-  // Consign (pending) is a running BALANCE, not a period figure — a consignment issued before "From"
-  // that's still unsettled is still genuinely outstanding today. So unlike the stats above, this is
-  // always computed from the complete, all-time consign data (same source as the per-product
-  // "Remaining Consign" column and the Countering page), never scoped to the selected date range.
-  const allTimeConsignValue = allConsignInvoices.reduce((s, inv) =>
+  // Consign (pending), as of the selected "To" date.
+  const allTimeConsignValue = consignInvoicesAsOf.reduce((s, inv) =>
     s + (inv.invoice_items || []).reduce((ss, item) => ss + itemRevenue(item), 0), 0)
-  const allTimeSettledValue = allCounterEntries
+  const allTimeSettledValue = counterEntriesAsOf
     .flatMap(entry => entry.counter_items || [])
     .reduce((s, ci) => s + settledDollarValue(ci), 0)
-  const allTimeReturnedValue = allConsignReturns.reduce((s, e) => {
+  const allTimeReturnedValue = consignReturnsAsOf.reduce((s, e) => {
     const rate = invoiceLineRate(e.invoice_id, e.product_id)
     const prod = products.find(p => p.id === e.product_id)
     const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
@@ -400,7 +406,7 @@ export default function Reports() {
             <div className="stat-card"><div className="stat-label">Total Returns</div><div className="stat-value">{totalReturns.toLocaleString()}</div></div>
             <div className="stat-card"><div className="stat-label">Net Sold</div><div className="stat-value">{(totalSold - totalReturns).toLocaleString()}</div></div>
             {hasPrice && <div className="stat-card" style={{borderColor:'rgba(34,197,94,0.3)'}}><div className="stat-label" style={{color:'var(--green-text)'}}>Revenue (incl. Settled)</div><div className="stat-value" style={{color:'var(--green-text)'}}>{fmt(effectivePaidRevenue)}</div></div>}
-            {hasPrice && pendingConsignRevenue > 0 && <div className="stat-card"><div className="stat-label" style={{opacity:0.6}}>Consign (pending)</div><div className="stat-value" style={{opacity:0.55}}>{fmt(pendingConsignRevenue)}</div></div>}
+            {hasPrice && pendingConsignRevenue > 0 && <div className="stat-card" title={`Total still outstanding across all consign invoices, as of ${dateTo} — this responds to the "To" date (a balance as of that day), but not "From" (a balance has no start date, only an as-of date).`}><div className="stat-label" style={{opacity:0.6}}>Consign (pending) <span style={{fontSize:'0.7em', opacity:0.7}}>· as of {dateTo}</span></div><div className="stat-value" style={{opacity:0.55}}>{fmt(pendingConsignRevenue)}</div></div>}
           </div>
 
           {mode === 'summary' ? (
@@ -409,7 +415,7 @@ export default function Reports() {
               {summaryRows.length === 0 ? <div className="empty-state"><p>No data for this period.</p></div> : (
                 <div className="table-wrap">
                   <table className="data-table">
-                    <thead><tr><th>Product</th><th>Total Sold</th><th>Cash</th><th>Credit</th><th>Consign</th><th>Countered</th><th>Remaining</th><th>Returns (Back)</th><th>Returns (Loss)</th><th>Net Sold</th>{hasPrice && <th>Revenue</th>}</tr></thead>
+                    <thead><tr><th>Product</th><th>Total Sold</th><th>Cash</th><th>Credit</th><th>Consign</th><th>Countered</th><th title={`As of ${dateTo}`}>Remaining</th><th>Returns (Back)</th><th>Returns (Loss)</th><th>Net Sold</th>{hasPrice && <th>Revenue</th>}</tr></thead>
                     <tbody>
                       {summaryRows.map((r, i) => {
                         const net = r.total_sold - r.returns_back - r.returns_loss
@@ -660,18 +666,25 @@ export default function Reports() {
                   </table>
                 </div>
               )}
-              <h2 className="section-title" style={{marginTop:'32px',marginBottom:'12px'}}>Consign Reconciliation</h2>
-              {allConsignInvoices.length === 0 ? <div className="empty-state"><p>No consign invoices found.</p></div> : (() => {
-                // Build per-invoice, per-product countered totals from ALL counter history
-                // Use ALL counter history (not date-filtered) so remaining is always accurate
+              <h2 className="section-title" style={{marginTop:'32px',marginBottom:'12px'}}>Consign Reconciliation <span style={{fontSize:12,fontWeight:400,opacity:0.6}}>(as of {dateTo})</span></h2>
+              {consignInvoicesAsOf.length === 0 ? <div className="empty-state"><p>No consign invoices found.</p></div> : (() => {
+                // Build per-invoice, per-product countered totals from counter history.
+                // IMPORTANT: invoice_id lives on each counter_item (ci.invoice_id), NOT on the counter_entries
+                // header (entry.invoice_id) — a FIFO settlement's header invoice_id is null since one settlement
+                // can span several invoices; only its individual line items know which invoice they drew from.
                 const counteredByInvProduct = {}
-                allCounterEntries.forEach(entry => {
-                  const invId = entry.invoice_id
-                  if (!invId) return
+                counterEntriesAsOf.forEach(entry => {
                   ;(entry.counter_items || []).forEach(ci => {
-                    const key = `${invId}__${ci.product_id}`
+                    if (!ci.invoice_id) return
+                    const key = `${ci.invoice_id}__${ci.product_id}`
                     counteredByInvProduct[key] = (counteredByInvProduct[key] || 0) + Number(ci.quantity)
                   })
+                })
+                // Same for returns of unsold consigned stock — also resolves the balance, not just settlements.
+                const returnedByInvProduct = {}
+                consignReturnsAsOf.forEach(r => {
+                  const key = `${r.invoice_id}__${r.product_id}`
+                  returnedByInvProduct[key] = (returnedByInvProduct[key] || 0) + Number(r.quantity)
                 })
 
                 return (
@@ -684,18 +697,20 @@ export default function Reports() {
                           <th>Client</th>
                           <th>Product</th>
                           <th>Consigned</th>
-                          <th style={{color:'var(--green-text)'}}>Countered</th>
+                          <th style={{color:'var(--green-text)'}}>Sold</th>
+                          <th style={{color:'var(--amber)'}}>Returned</th>
                           <th>Remaining</th>
                           <th>Status</th>
                           {hasPrice && <th>Remaining Value</th>}
                         </tr>
                       </thead>
                       <tbody>
-                        {allConsignInvoices.flatMap(inv =>
+                        {consignInvoicesAsOf.flatMap(inv =>
                           (inv.invoice_items || []).map((item, idx) => {
                             const countered = counteredByInvProduct[`${inv.id}__${item.product_id}`] || 0
+                            const returnedQty = returnedByInvProduct[`${inv.id}__${item.product_id}`] || 0
                             const consigned = Number(item.quantity)
-                            const remaining = Math.max(0, consigned - countered)
+                            const remaining = Math.max(0, consigned - countered - returnedQty)
                             const isSettled = remaining === 0
                             const price = item.products?.unit_price
                             const remainingValue = price ? remaining * Number(price) : null
@@ -707,11 +722,12 @@ export default function Reports() {
                                 <td>{item.products?.name}</td>
                                 <td className="td-qty">{consigned.toLocaleString()} <span className="unit-label">{item.products?.unit}</span></td>
                                 <td className="td-qty" style={{color: countered > 0 ? 'var(--green-text)' : 'var(--text-muted)'}}>{countered.toLocaleString()}</td>
+                                <td className="td-qty" style={{color: returnedQty > 0 ? 'var(--amber)' : 'var(--text-muted)'}}>{returnedQty.toLocaleString()}</td>
                                 <td className="td-qty" style={{fontWeight: remaining > 0 ? 600 : 400}}>{remaining.toLocaleString()}</td>
                                 <td>
                                   {isSettled
-                                    ? <span className="badge badge-green">Settled</span>
-                                    : countered > 0
+                                    ? <span className="badge badge-green">Closed</span>
+                                    : (countered > 0 || returnedQty > 0)
                                       ? <span className="badge badge-blue">Partial</span>
                                       : <span className="badge badge-amber">Pending</span>
                                   }
