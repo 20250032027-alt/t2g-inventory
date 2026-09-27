@@ -58,7 +58,7 @@ export default function Reports() {
         .eq('payment_type', 'Consign')
         .order('date', { ascending: false }),
       supabase.from('counter_entries')
-        .select('date, counter_items(product_id, quantity, invoice_id)'),
+        .select('date, counter_items(product_id, quantity, invoice_id, products(name, unit, unit_price))'),
       supabase.from('return_entries')
         .select('date, invoice_id, product_id, quantity')
         .not('invoice_id', 'is', null),
@@ -145,9 +145,12 @@ export default function Reports() {
 
   // Dollar value of a settled (countered) quantity, using the real rate from the invoice
   // it was drawn from — falls back to current unit price only if the source invoice can't be found.
+  // Uses the separately-fetched `products` list (not ci.products) so this works the same regardless
+  // of which query supplied `ci` — some counter_items queries in this file don't nest product pricing.
   function settledDollarValue(ci) {
     const rate = invoiceLineRate(ci.invoice_id, ci.product_id)
-    const fallback = ci.products?.unit_price ? Number(ci.products.unit_price) : 0
+    const prod = products.find(p => p.id === ci.product_id)
+    const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
     return Number(ci.quantity) * (rate != null ? rate : fallback)
   }
 
@@ -243,7 +246,8 @@ export default function Reports() {
     .filter(e => e.invoice_id)
     .reduce((s, e) => {
       const rate = invoiceLineRate(e.invoice_id, e.product_id)
-      const fallback = e.products?.unit_price ? Number(e.products.unit_price) : 0
+      const prod = products.find(p => p.id === e.product_id)
+      const fallback = prod?.unit_price ? Number(prod.unit_price) : 0
       return s + Number(e.quantity) * (rate != null ? rate : fallback)
     }, 0)
   const netConsignChangeThisPeriod = newConsignedThisPeriod - settledConsignRevenue - returnedConsignThisPeriod
