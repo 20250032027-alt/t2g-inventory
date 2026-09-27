@@ -63,7 +63,8 @@ export default function Products() {
 
   async function handleDelete(id) {
     if (!confirm('Delete this product? This will also remove all related entries.')) return
-    await supabase.from('products').delete().eq('id', id)
+    const { error } = await supabase.from('products').delete().eq('id', id)
+    if (error) { showToast(`Delete failed: ${error.message}`, 'error'); return }
     fetchProducts()
   }
 

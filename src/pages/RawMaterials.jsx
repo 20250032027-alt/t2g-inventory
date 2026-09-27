@@ -73,7 +73,12 @@ export default function RawMaterials() {
   const [adjustError, setAdjustError] = useState('')
   const [adjustSaving, setAdjustSaving] = useState(false)
 
-  function today() { return new Date().toISOString().split('T')[0] }
+  // Local calendar date (NOT UTC) — toISOString() returns the wrong date for early-morning
+  // hours in the Philippines (UTC+8), silently misdating entries logged before ~8am.
+  function today() {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
 
   useEffect(() => { fetchAll() }, [])
 
@@ -154,7 +159,16 @@ export default function RawMaterials() {
   }
   async function handleMatDelete(id) {
     if (!confirm('Delete this raw material? This also removes its stock history and any assembly recipe lines using it.')) return
-    await supabase.from('raw_materials').delete().eq('id', id)
+    const { error } = await supabase.from('raw_materials').delete().eq('id', id)
+    if (error) {
+      showToast(
+        error.code === '23503'
+          ? 'Can\'t delete — this material has tapper intake history. Remove those entries first, or keep the material.'
+          : `Delete failed: ${error.message}`,
+        'error'
+      )
+      return
+    }
     fetchAll()
   }
 
@@ -192,7 +206,8 @@ export default function RawMaterials() {
   }
   async function handleDelete(id) {
     if (!confirm('Remove this entry?')) return
-    await supabase.from('raw_material_entries').delete().eq('id', id)
+    const { error } = await supabase.from('raw_material_entries').delete().eq('id', id)
+    if (error) { showToast(`Delete failed: ${error.message}`, 'error'); return }
     fetchAll()
   }
 

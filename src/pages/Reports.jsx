@@ -3,7 +3,14 @@ import { supabase } from '../lib/supabase'
 import { Download, Printer, ChevronDown } from 'lucide-react'
 import * as XLSX from 'xlsx'
 
-const CURRENT_MONTH = new Date().toISOString().slice(0, 7)
+// Local calendar date (NOT UTC) — toISOString() returns the wrong date for early-morning
+// hours in the Philippines (UTC+8), which would silently shift the default report window
+// (and, on the 1st of a month before ~8am, even the wrong MONTH) by a day.
+function todayLocal() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const CURRENT_MONTH = todayLocal().slice(0, 7)
 
 export default function Reports() {
   const [invoices, setInvoices] = useState([])
@@ -17,7 +24,7 @@ export default function Reports() {
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState('summary')
   const [dateFrom, setDateFrom] = useState(CURRENT_MONTH + '-01')
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0])
+  const [dateTo, setDateTo] = useState(todayLocal())
   const [filterProduct, setFilterProduct] = useState('all')
 
   useEffect(() => { fetchAll() }, [dateFrom, dateTo, filterProduct])

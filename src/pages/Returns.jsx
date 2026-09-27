@@ -24,7 +24,12 @@ export default function Returns() {
   const [saving, setSaving] = useState(false)
   const [editingEntry, setEditingEntry] = useState(null)
 
-  function today() { return new Date().toISOString().split('T')[0] }
+  // Local calendar date (NOT UTC) — toISOString() returns the wrong date for early-morning
+  // hours in the Philippines (UTC+8), silently misdating entries logged before ~8am.
+  function today() {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
 
   useEffect(() => { fetchAll() }, [])
 
@@ -143,9 +148,10 @@ export default function Returns() {
 
   async function handleDelete(id) {
     if (!confirm('Remove this return entry?')) return
-    await supabase.from('return_entries').delete().eq('id', id)
+    const { error } = await supabase.from('return_entries').delete().eq('id', id)
+    if (error) { showToast(`Delete failed: ${error.message}`, 'error'); return }
     fetchAll()
-    showToast('Entry removed', 'error')
+    showToast('Entry removed')
   }
 
   const selectedProduct = products.find(p => p.id === form.product_id)

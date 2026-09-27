@@ -120,7 +120,12 @@ export default function Sales() {
     item?.scrollIntoView({ block: 'nearest' })
   }, [suggestActiveIndex])
 
-  function today() { return new Date().toISOString().split('T')[0] }
+  // Local calendar date (NOT UTC) — toISOString() returns the wrong date for early-morning
+  // hours in the Philippines (UTC+8), silently misdating entries logged before ~8am.
+  function today() {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
 
   useEffect(() => { fetchAll() }, [])
 
@@ -302,7 +307,8 @@ export default function Sales() {
 
       if (invErr) { setSaving(false); return setError(invErr.message) }
 
-      await supabase.from('invoice_items').delete().eq('invoice_id', editingInvoice.id)
+      const { error: delErr } = await supabase.from('invoice_items').delete().eq('invoice_id', editingInvoice.id)
+      if (delErr) { setSaving(false); return setError(`Couldn't update line items: ${delErr.message}`) }
       const { error: itemErr } = await supabase.from('invoice_items').insert(buildItems(editingInvoice.id))
 
       setSaving(false)
@@ -331,7 +337,17 @@ export default function Sales() {
   }
 
   async function handleDelete(inv) {
-    await supabase.from('invoices').delete().eq('id', inv.id)
+    // Warn clearly if this invoice has settlement (Countering) or return history —
+    // deleting it cascades to delete those records too, which is easy to not expect.
+    const hasSettlements = counterItems.some(ci => ci.invoice_id === inv.id)
+    const hasReturns = consignReturns.some(r => r.invoice_id === inv.id)
+    const warning = hasSettlements || hasReturns
+      ? ` This invoice has ${[hasSettlements && 'settlement (Countering)', hasReturns && 'return'].filter(Boolean).join(' and ')} records attached — deleting it will also permanently delete those.`
+      : ''
+    if (!confirm(`Delete invoice ${inv.reference_no || ''} for ${inv.client || 'this client'}?${warning}`)) return
+
+    const { error } = await supabase.from('invoices').delete().eq('id', inv.id)
+    if (error) { showToast(`Delete failed: ${error.message}`, 'error'); return }
     showToast('Invoice deleted.')
     fetchAll()
   }

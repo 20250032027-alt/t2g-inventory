@@ -5,7 +5,12 @@ import { showToast } from '../components/Toast'
 
 const DEFAULT_RATE = 120
 
-function today() { return new Date().toISOString().split('T')[0] }
+// Local calendar date (NOT UTC) — toISOString() returns the wrong date for early-morning
+// hours in the Philippines (UTC+8), silently misdating entries logged before ~8am.
+function today() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 export default function TapperIntake() {
   const [tappers, setTappers] = useState([])
@@ -115,7 +120,8 @@ export default function TapperIntake() {
   }
   async function handleTapperDelete(id) {
     if (!confirm('Delete this tapper? Their intake history will also be removed.')) return
-    await supabase.from('tappers').delete().eq('id', id)
+    const { error } = await supabase.from('tappers').delete().eq('id', id)
+    if (error) { showToast(`Delete failed: ${error.message}`, 'error'); return }
     fetchAll()
   }
 
@@ -161,7 +167,10 @@ export default function TapperIntake() {
     if (editingEntry) {
       const { error } = await supabase.from('tapper_intakes').update(payload).eq('id', editingEntry.id)
       saveError = error
-      if (!error) await supabase.from('raw_material_entries').delete().eq('tapper_intake_id', editingEntry.id)
+      if (!error) {
+        const { error: clearErr } = await supabase.from('raw_material_entries').delete().eq('tapper_intake_id', editingEntry.id)
+        if (clearErr) { setSaving(false); return setError(`Couldn't update raw material stock: ${clearErr.message}`) }
+      }
     } else {
       const { data, error } = await supabase.from('tapper_intakes').insert(payload).select().single()
       saveError = error
@@ -189,7 +198,8 @@ export default function TapperIntake() {
 
   async function handleDelete(id) {
     if (!confirm('Delete this intake entry? This will also remove the raw material stock it added.')) return
-    await supabase.from('tapper_intakes').delete().eq('id', id)
+    const { error } = await supabase.from('tapper_intakes').delete().eq('id', id)
+    if (error) { showToast(`Delete failed: ${error.message}`, 'error'); return }
     fetchAll()
   }
 

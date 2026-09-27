@@ -44,7 +44,13 @@ function PinModal({ onSuccess, onCancel, title }) {
   )
 }
 
-function today() { return new Date().toISOString().split('T')[0] }
+// Local calendar date (NOT UTC) — using toISOString() here would return the wrong date
+// for hours after local midnight but before UTC midnight (e.g. 12am–8am in the Philippines,
+// UTC+8), silently misdating anything logged in the early morning.
+function today() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 function fmt(n) { return n != null ? `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2 })}` : '—' }
 
 export default function Countering() {
@@ -229,6 +235,52 @@ export default function Countering() {
 
     setSaving(true); setFifoError('')
 
+    // Re-check availability against fresh data right before writing — someone else may have
+    // recorded a sale or return against these same invoices since this preview was computed.
+    const invoiceIds = [...new Set(fifoPreview.map(a => a.invoice_id))]
+    const [{ data: freshCounterItems, error: freshCiErr }, { data: freshReturns, error: freshRetErr }] = await Promise.all([
+      supabase.from('counter_items').select('invoice_id, product_id, quantity').in('invoice_id', invoiceIds),
+      supabase.from('return_entries').select('invoice_id, product_id, quantity').in('invoice_id', invoiceIds),
+    ])
+    if (freshCiErr || freshRetErr) {
+      setSaving(false)
+      setFifoError((freshCiErr || freshRetErr).message)
+      return
+    }
+    const alreadyTaken = {}
+    ;(freshCounterItems || []).forEach(ci => {
+      const key = `${ci.invoice_id}::${ci.product_id}`
+      alreadyTaken[key] = (alreadyTaken[key] || 0) + Number(ci.quantity)
+    })
+    ;(freshReturns || []).forEach(r => {
+      const key = `${r.invoice_id}::${r.product_id}`
+      alreadyTaken[key] = (alreadyTaken[key] || 0) + Number(r.quantity)
+    })
+    // Sum this preview's own allocations per invoice/product, then check against the invoice's actual consigned qty
+    const previewTakenByKey = {}
+    fifoPreview.forEach(a => {
+      const key = `${a.invoice_id}::${a.product_id}`
+      previewTakenByKey[key] = (previewTakenByKey[key] || 0) + Number(a.quantity)
+    })
+    const raceErrors = []
+    for (const [key, previewQty] of Object.entries(previewTakenByKey)) {
+      const [invoiceId, productId] = key.split('::')
+      const inv = consignInvoices.find(i => i.id === invoiceId)
+      const invItem = inv?.invoice_items?.find(it => it.product_id === productId)
+      const consignedQty = invItem ? Number(invItem.quantity) : 0
+      const takenElsewhere = alreadyTaken[key] || 0
+      if (takenElsewhere + previewQty > consignedQty) {
+        const prod = products.find(p => p.id === productId)
+        raceErrors.push(`${prod?.name || 'A product'} on ${inv?.reference_no || inv?.date || 'an invoice'}: someone else just recorded activity on this invoice — only ${Math.max(0, consignedQty - takenElsewhere)} left, this would take ${previewQty}.`)
+      }
+    }
+    if (raceErrors.length > 0) {
+      setSaving(false)
+      setFifoError(`Stock changed since you previewed this — please re-check and try again:\n\n${raceErrors.join('\n')}`)
+      setFifoPreview(null)
+      return
+    }
+
     // 1. One counter_entry header (no invoice_id — spans multiple invoices)
     const { data: entry, error: entryErr } = await supabase
       .from('counter_entries')
@@ -300,7 +352,10 @@ export default function Countering() {
     if (action === 'edit') openEditCounter(log)
   }
   async function handleDeleteCounter(log) {
-    await supabase.from('counter_entries').delete().eq('id', log.id)
+    const itemCount = (log.counter_items || []).length
+    if (!confirm(`Delete this settlement record${itemCount ? ` (${itemCount} item${itemCount === 1 ? '' : 's'})` : ''}? The consign balance it settled will go back to pending.`)) return
+    const { error } = await supabase.from('counter_entries').delete().eq('id', log.id)
+    if (error) { showToast(`Delete failed: ${error.message}`, 'error'); return }
     showToast('Counter entry deleted. Consign balance restored.')
     fetchAll()
   }
