@@ -1,9 +1,16 @@
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
-import { Plus, X, Check, ChevronDown, Search, Pencil } from 'lucide-react'
+import { Plus, X, Check, ChevronDown, Search, Pencil, Trash2 } from 'lucide-react'
 import { showToast } from '../components/Toast'
 
 const REASONS = ['Bad Order', 'Wrong Item', 'Damaged', 'Expired', 'Client Return', 'Other']
+
+function emptyLine(defaultProductId) {
+  return {
+    product_id: defaultProductId || '', quantity: '', reason: 'Bad Order',
+    restore_stock: true, is_consigned: false, invoice_id: '',
+  }
+}
 
 export default function Returns() {
   const [entries, setEntries] = useState([])
@@ -15,10 +22,8 @@ export default function Returns() {
   const [search, setSearch] = useState('')
   const [filterReason, setFilterReason] = useState('all')
   const [form, setForm] = useState({
-    product_id: '', quantity: '', date: today(),
-    reason: 'Bad Order', restore_stock: true,
-    reference_no: '', client: '', notes: '',
-    is_consigned: false, invoice_id: '',
+    reference_no: '', client: '', date: today(), notes: '',
+    lines: [emptyLine()],
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -37,7 +42,7 @@ export default function Returns() {
     setLoading(true)
     const [{ data: prods }, { data: ents }, { data: invs }, { data: cItems }] = await Promise.all([
       supabase.from('products').select('id, name, unit').order('name'),
-      supabase.from('return_entries').select('*, products(name, unit), invoices(reference_no, client, date)').order('date', { ascending: false }).limit(300),
+      supabase.from('return_entries').select('*, products(name, unit), invoices(reference_no, client, date)').order('date', { ascending: false }),
       supabase.from('invoices').select('*, invoice_items(product_id, quantity)').eq('payment_type', 'Consign').order('date', { ascending: false }),
       supabase.from('counter_items').select('invoice_id, product_id, quantity'),
     ])
@@ -90,60 +95,128 @@ export default function Returns() {
   function openNew() {
     setEditingEntry(null)
     setForm({
-      product_id: products[0]?.id || '', quantity: '', date: today(), reason: 'Bad Order', restore_stock: true,
-      reference_no: '', client: '', notes: '', is_consigned: false, invoice_id: '',
+      reference_no: '', client: '', date: today(), notes: '',
+      lines: [emptyLine(products[0]?.id)],
     })
     setError('')
     setShowForm(true)
   }
 
+  // Editing an existing entry always edits just that one row/line — multi-line "Add Line" is
+  // only for creating several returns from the same event at once, not for bulk-editing later.
   function openEdit(entry) {
     setEditingEntry(entry)
     setForm({
-      product_id: entry.product_id,
-      quantity: String(entry.quantity),
-      date: entry.date,
-      reason: entry.reason || 'Bad Order',
-      restore_stock: entry.restore_stock,
       reference_no: entry.reference_no || '',
       client: entry.client || '',
+      date: entry.date,
       notes: entry.notes || '',
-      is_consigned: !!entry.invoice_id,
-      invoice_id: entry.invoice_id || '',
+      lines: [{
+        product_id: entry.product_id,
+        quantity: String(entry.quantity),
+        reason: entry.reason || 'Bad Order',
+        restore_stock: entry.restore_stock,
+        is_consigned: !!entry.invoice_id,
+        invoice_id: entry.invoice_id || '',
+      }],
     })
     setError('')
     setShowForm(true)
+  }
+
+  function addLine() {
+    setForm(f => ({ ...f, lines: [...f.lines, emptyLine(products[0]?.id)] }))
+  }
+
+  function removeLine(i) {
+    setForm(f => ({ ...f, lines: f.lines.filter((_, idx) => idx !== i) }))
+  }
+
+  function updateLine(i, field, value) {
+    setForm(f => {
+      const lines = [...f.lines]
+      const line = { ...lines[i], [field]: value }
+      // Mirror the old single-line behavior: toggling "consigned" or changing the invoice
+      // clears the product choice, since the product list narrows to that invoice's items.
+      if (field === 'is_consigned') {
+        line.invoice_id = ''
+        line.product_id = value ? '' : (products[0]?.id || '')
+      }
+      if (field === 'invoice_id') {
+        line.product_id = ''
+      }
+      lines[i] = line
+      return { ...f, lines }
+    })
+  }
+
+  function productOptionsForLine(line) {
+    if (!line.is_consigned) return products
+    return (consignInvoices.find(i => i.id === line.invoice_id)?.invoice_items || [])
+      .map(it => products.find(p => p.id === it.product_id))
+      .filter(Boolean)
   }
 
   async function handleSave(e) {
     e.preventDefault()
-    if (!form.product_id) return setError('Select a product.')
-    if (!form.quantity || isNaN(form.quantity) || Number(form.quantity) <= 0) return setError('Enter a valid quantity.')
-    if (form.is_consigned) {
-      if (!form.invoice_id) return setError('Select which consign invoice this return is from.')
-      const max = remainingForInvoiceProduct(form.invoice_id, form.product_id, editingEntry?.id)
-      if (Number(form.quantity) > max) {
-        return setError(`Only ${max.toLocaleString()} still pending with the client on this invoice for this product.`)
+    if (form.lines.length === 0) return setError('Add at least one product line.')
+
+    // Validate each line, tracking how much of each invoice/product's remaining balance
+    // has already been claimed by an earlier line in this same submission.
+    const claimedByKey = {}
+    for (const [i, line] of form.lines.entries()) {
+      const n = i + 1
+      if (!line.product_id) return setError(`Line ${n}: select a product.`)
+      if (!line.quantity || isNaN(line.quantity) || Number(line.quantity) <= 0) return setError(`Line ${n}: enter a valid quantity.`)
+      if (line.is_consigned) {
+        if (!line.invoice_id) return setError(`Line ${n}: select which consign invoice this return is from.`)
+        const key = `${line.invoice_id}::${line.product_id}`
+        const alreadyClaimed = claimedByKey[key] || 0
+        const max = remainingForInvoiceProduct(line.invoice_id, line.product_id, editingEntry?.id) - alreadyClaimed
+        if (Number(line.quantity) > max) {
+          return setError(`Line ${n}: only ${Math.max(0, max).toLocaleString()} still pending with the client on this invoice for this product.`)
+        }
+        claimedByKey[key] = alreadyClaimed + Number(line.quantity)
       }
     }
+
     setSaving(true); setError('')
-    const payload = {
-      product_id: form.product_id, quantity: Number(form.quantity), date: form.date,
-      reason: form.reason, restore_stock: form.restore_stock,
+
+    const sharedFields = {
+      date: form.date,
       reference_no: form.reference_no.trim() || null,
       client: form.client.trim() || null,
       notes: form.notes.trim() || null,
-      invoice_id: form.is_consigned ? form.invoice_id : null,
     }
-    const { error } = editingEntry
-      ? await supabase.from('return_entries').update(payload).eq('id', editingEntry.id)
-      : await supabase.from('return_entries').insert(payload)
-    setSaving(false)
-    if (error) return setError(error.message)
+
+    if (editingEntry) {
+      const line = form.lines[0]
+      const payload = {
+        ...sharedFields,
+        product_id: line.product_id, quantity: Number(line.quantity),
+        reason: line.reason, restore_stock: line.restore_stock,
+        invoice_id: line.is_consigned ? line.invoice_id : null,
+      }
+      const { error } = await supabase.from('return_entries').update(payload).eq('id', editingEntry.id)
+      setSaving(false)
+      if (error) return setError(error.message)
+      showToast('Return entry updated')
+    } else {
+      const rows = form.lines.map(line => ({
+        ...sharedFields,
+        product_id: line.product_id, quantity: Number(line.quantity),
+        reason: line.reason, restore_stock: line.restore_stock,
+        invoice_id: line.is_consigned ? line.invoice_id : null,
+      }))
+      const { error } = await supabase.from('return_entries').insert(rows)
+      setSaving(false)
+      if (error) return setError(error.message)
+      showToast(rows.length > 1 ? `${rows.length} returns logged successfully` : 'Return logged successfully')
+    }
+
     setShowForm(false)
     setEditingEntry(null)
     fetchAll()
-    showToast(editingEntry ? 'Return entry updated' : 'Return logged successfully')
   }
 
   async function handleDelete(id) {
@@ -153,8 +226,6 @@ export default function Returns() {
     fetchAll()
     showToast('Entry removed')
   }
-
-  const selectedProduct = products.find(p => p.id === form.product_id)
 
   return (
     <div className="page">
@@ -236,7 +307,7 @@ export default function Returns() {
             <form onSubmit={handleSave} className="modal-form">
               <div className="field-row">
                 <div className="field-group">
-                  <label>Reference / Invoice #</label>
+                  <label>Reference / Delivery #</label>
                   <input value={form.reference_no} onChange={e => setForm({...form, reference_no: e.target.value})} placeholder="e.g. SI-2025-001" />
                 </div>
                 <div className="field-group">
@@ -245,79 +316,106 @@ export default function Returns() {
                 </div>
               </div>
               <div className="field-group">
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={form.is_consigned}
-                    onChange={e => setForm({ ...form, is_consigned: e.target.checked, invoice_id: '', product_id: e.target.checked ? '' : (products[0]?.id || '') })}
-                    style={{ width: 'auto' }} />
-                  This is unsold consigned stock coming back from a client
-                </label>
-                <p className="field-hint">Reduces the pending consign balance for that invoice, on top of any stock action below.</p>
+                <label>Date *</label>
+                <input type="date" value={form.date} onChange={e => setForm({...form, date: e.target.value})} style={{maxWidth: 200}} />
               </div>
 
-              {form.is_consigned && (
-                <div className="field-group">
-                  <label>Consign Invoice *</label>
-                  <div className="select-wrap">
-                    <select value={form.invoice_id} onChange={e => setForm({ ...form, invoice_id: e.target.value, product_id: '' })}>
-                      <option value="">Select invoice...</option>
-                      {consignInvoices.map(inv => (
-                        <option key={inv.id} value={inv.id}>
-                          {inv.reference_no || inv.id.slice(0, 8)} — {inv.client || 'No client'} ({inv.date})
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown size={16} className="select-icon" />
-                  </div>
+              <div className="lines-section" style={{marginTop: 4}}>
+                <div className="lines-header">
+                  <span className="lines-title">Products Being Returned</span>
+                  {!editingEntry && (
+                    <button type="button" className="btn-ghost btn-sm" onClick={addLine}>
+                      <Plus size={14} /> Add Line
+                    </button>
+                  )}
                 </div>
-              )}
 
-              <div className="field-group">
-                <label>Product *</label>
-                <div className="select-wrap">
-                  <select value={form.product_id} onChange={e => setForm({...form, product_id: e.target.value})} disabled={form.is_consigned && !form.invoice_id}>
-                    <option value="">{form.is_consigned && !form.invoice_id ? 'Select an invoice first' : 'Select...'}</option>
-                    {(form.is_consigned
-                      ? (consignInvoices.find(i => i.id === form.invoice_id)?.invoice_items || [])
-                          .map(it => products.find(p => p.id === it.product_id))
-                          .filter(Boolean)
-                      : products
-                    ).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                  <ChevronDown size={16} className="select-icon" />
-                </div>
-                {form.is_consigned && form.invoice_id && form.product_id && (
-                  <p className="field-hint">
-                    {remainingForInvoiceProduct(form.invoice_id, form.product_id, editingEntry?.id).toLocaleString()} still pending with the client for this product on this invoice.
-                  </p>
-                )}
+                {form.lines.map((line, i) => {
+                  const selectedProduct = products.find(p => p.id === line.product_id)
+                  return (
+                    <div key={i} style={{
+                      border: '1px solid var(--border, #333)', borderRadius: 10,
+                      padding: 14, marginBottom: 12, position: 'relative',
+                    }}>
+                      {!editingEntry && form.lines.length > 1 && (
+                        <button type="button" className="icon-btn danger" onClick={() => removeLine(i)} title="Remove line"
+                          style={{ position: 'absolute', top: 10, right: 10 }}>
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+
+                      <div className="field-group" style={{marginBottom: 10}}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                          <input type="checkbox" checked={line.is_consigned}
+                            onChange={e => updateLine(i, 'is_consigned', e.target.checked)}
+                            style={{ width: 'auto' }} />
+                          This is unsold consigned stock coming back from a client
+                        </label>
+                      </div>
+
+                      {line.is_consigned && (
+                        <div className="field-group" style={{marginBottom: 10}}>
+                          <label>Consign Invoice *</label>
+                          <div className="select-wrap">
+                            <select value={line.invoice_id} onChange={e => updateLine(i, 'invoice_id', e.target.value)}>
+                              <option value="">Select invoice...</option>
+                              {consignInvoices.map(inv => (
+                                <option key={inv.id} value={inv.id}>
+                                  {inv.reference_no || inv.id.slice(0, 8)} — {inv.client || 'No client'} ({inv.date})
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown size={16} className="select-icon" />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="field-row" style={{marginBottom: 10}}>
+                        <div className="field-group">
+                          <label>Product *</label>
+                          <div className="select-wrap">
+                            <select value={line.product_id} onChange={e => updateLine(i, 'product_id', e.target.value)} disabled={line.is_consigned && !line.invoice_id}>
+                              <option value="">{line.is_consigned && !line.invoice_id ? 'Select an invoice first' : 'Select...'}</option>
+                              {productOptionsForLine(line).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                            <ChevronDown size={16} className="select-icon" />
+                          </div>
+                          {line.is_consigned && line.invoice_id && line.product_id && (
+                            <p className="field-hint">
+                              {remainingForInvoiceProduct(line.invoice_id, line.product_id, editingEntry?.id).toLocaleString()} still pending with the client for this product on this invoice.
+                            </p>
+                          )}
+                        </div>
+                        <div className="field-group">
+                          <label>Quantity * {selectedProduct && <span className="unit-hint">({selectedProduct.unit})</span>}</label>
+                          <input type="number" min="0.01" step="any" value={line.quantity} onChange={e => updateLine(i, 'quantity', e.target.value)} placeholder="0" />
+                        </div>
+                      </div>
+
+                      <div className="field-row" style={{marginBottom: 10}}>
+                        <div className="field-group">
+                          <label>Reason</label>
+                          <div className="select-wrap">
+                            <select value={line.reason} onChange={e => updateLine(i, 'reason', e.target.value)}>
+                              {REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                            </select>
+                            <ChevronDown size={16} className="select-icon" />
+                          </div>
+                        </div>
+                        <div className="field-group">
+                          <label>Stock Action</label>
+                          <div className="toggle-group">
+                            <button type="button" className={`toggle-btn ${line.restore_stock ? 'toggle-active' : ''}`} onClick={() => updateLine(i, 'restore_stock', true)}>Return to Stock</button>
+                            <button type="button" className={`toggle-btn ${!line.restore_stock ? 'toggle-active-red' : ''}`} onClick={() => updateLine(i, 'restore_stock', false)}>Write Off</button>
+                          </div>
+                        </div>
+                      </div>
+                      <p className="field-hint" style={{margin: 0}}>{line.restore_stock ? 'Added back to available inventory.' : 'Recorded as a loss — will not return to inventory.'}</p>
+                    </div>
+                  )
+                })}
               </div>
-              <div className="field-row">
-                <div className="field-group">
-                  <label>Quantity * {selectedProduct && <span className="unit-hint">({selectedProduct.unit})</span>}</label>
-                  <input type="number" min="0.01" step="any" value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} placeholder="0" />
-                </div>
-                <div className="field-group">
-                  <label>Date *</label>
-                  <input type="date" value={form.date} onChange={e => setForm({...form, date: e.target.value})} />
-                </div>
-              </div>
-              <div className="field-group">
-                <label>Reason</label>
-                <div className="select-wrap">
-                  <select value={form.reason} onChange={e => setForm({...form, reason: e.target.value})}>
-                    {REASONS.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                  <ChevronDown size={16} className="select-icon" />
-                </div>
-              </div>
-              <div className="field-group">
-                <label>Stock Action</label>
-                <div className="toggle-group">
-                  <button type="button" className={`toggle-btn ${form.restore_stock ? 'toggle-active' : ''}`} onClick={() => setForm({...form, restore_stock: true})}>Return to Stock</button>
-                  <button type="button" className={`toggle-btn ${!form.restore_stock ? 'toggle-active-red' : ''}`} onClick={() => setForm({...form, restore_stock: false})}>Write Off (Loss)</button>
-                </div>
-                <p className="field-hint">{form.restore_stock ? 'This quantity will be added back to available inventory.' : 'This quantity will be recorded as a loss and will not return to inventory.'}</p>
-              </div>
+
               <div className="field-group">
                 <label>Notes</label>
                 <input value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} placeholder="Optional details" />
