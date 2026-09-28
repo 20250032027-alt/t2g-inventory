@@ -279,6 +279,26 @@ export default function Sales() {
       if (line.amount !== '' && (isNaN(line.amount) || Number(line.amount) < 0))
         return setError('Enter a valid amount for each line.')
     }
+
+    // Editing a Consign invoice that already has settlements or returns against it: don't let the new
+    // line items leave less than what's already recorded, which would silently orphan those records.
+    if (editingInvoice && editingInvoice.payment_type === 'Consign') {
+      const committedByProduct = {}
+      ;(editingInvoice.invoice_items || []).forEach(item => {
+        const committed = getCounteredQtyForItem(editingInvoice.id, item.product_id)
+        if (committed > 0) committedByProduct[item.product_id] = committed
+      })
+      for (const [productId, committed] of Object.entries(committedByProduct)) {
+        const newQty = form.lines
+          .filter(l => l.product_id === productId)
+          .reduce((s, l) => s + (Number(l.quantity) || 0), 0)
+        if (newQty < committed) {
+          const prodName = products.find(p => p.id === productId)?.name || 'This product'
+          return setError(`${prodName} already has ${committed.toLocaleString()} settled/returned on this invoice — you can't reduce it below that (or remove it). Adjust Countering or Returns first if that's really wrong.`)
+        }
+      }
+    }
+
     setSaving(true); setError('')
 
     const buildItems = (invoiceId) => form.lines.map(l => ({
@@ -445,10 +465,22 @@ export default function Sales() {
   }
 
   // How much of a given product on a given invoice has been countered/settled
-  function getCounteredQtyForItem(invoiceId, productId) {
+  function getSoldQtyForItem(invoiceId, productId) {
     return counterItems
       .filter(ci => ci.invoice_id === invoiceId && ci.product_id === productId)
       .reduce((s, ci) => s + Number(ci.quantity), 0)
+  }
+
+  // Returned unsold (return tagged to this consign invoice) — also comes off the balance.
+  function getReturnedQtyForItem(invoiceId, productId) {
+    return consignReturns
+      .filter(r => r.invoice_id === invoiceId && r.product_id === productId)
+      .reduce((s, r) => s + Number(r.quantity), 0)
+  }
+
+  // No longer pending with the client: sold (settled in Countering) OR returned unsold.
+  function getCounteredQtyForItem(invoiceId, productId) {
+    return getSoldQtyForItem(invoiceId, productId) + getReturnedQtyForItem(invoiceId, productId)
   }
 
   // The real per-unit rate a specific consign invoice's product line was sold at
@@ -469,12 +501,18 @@ export default function Sales() {
     if (inv.payment_type !== 'Consign') return null
     const items = inv.invoice_items || []
     if (items.length === 0) return null
-    const totalQty = items.reduce((s, i) => s + Number(i.quantity), 0)
-    const totalCountered = items.reduce((s, i) => s + getCounteredQtyForItem(inv.id, i.product_id), 0)
+    // Group by product (an invoice can list the same product twice) and cap each product at what was
+    // consigned, so an over-count on one product can't hide what's still outstanding on another.
+    const qtyByProduct = {}
+    items.forEach(i => { qtyByProduct[i.product_id] = (qtyByProduct[i.product_id] || 0) + Number(i.quantity) })
+    const totalQty = Object.values(qtyByProduct).reduce((s, q) => s + q, 0)
+    const totalCountered = Object.entries(qtyByProduct)
+      .reduce((s, [pid, q]) => s + Math.min(getCounteredQtyForItem(inv.id, pid), q), 0)
     const pct = totalQty > 0 ? Math.round((totalCountered / totalQty) * 100) : 0
-    if (pct === 0) return { label: 'Pending', cls: 'badge-amber', pct }
-    if (pct >= 100) return { label: 'Fully Settled', cls: 'badge-green', pct }
-    return { label: 'Partial', cls: 'badge-blue', pct }
+    const detail = { counted: totalCountered, total: totalQty }
+    if (pct === 0) return { label: 'Pending', cls: 'badge-amber', pct, ...detail }
+    if (pct >= 100) return { label: 'Closed', cls: 'badge-green', pct, ...detail }
+    return { label: 'Partial', cls: 'badge-blue', pct, ...detail }
   }
 
   function invoiceSummary(inv) {
@@ -674,7 +712,7 @@ export default function Sales() {
                     <td>
                       <span className={`badge payment-${inv.payment_type?.toLowerCase()}`}>{inv.payment_type}</span>
                       {settlement && (
-                        <span className={`badge ${settlement.cls}`} style={{ marginLeft: 6 }}>
+                        <span className={`badge ${settlement.cls}`} style={{ marginLeft: 6 }} title={`${settlement.counted.toLocaleString()} of ${settlement.total.toLocaleString()} units sold or returned (counted by units across all products on this invoice). Expand the row to see what's still remaining per product.`}>
                           {settlement.label}{settlement.pct > 0 && settlement.pct < 100 ? ` ${settlement.pct}%` : ''}
                         </span>
                       )}
@@ -708,7 +746,8 @@ export default function Sales() {
                                 <th>Quantity</th>
                                 {hasPrice && <th>Unit Price</th>}
                                 {hasPrice && <th>Amount</th>}
-                                {inv.payment_type === 'Consign' && <th>Settled</th>}
+                                {inv.payment_type === 'Consign' && <th>Sold</th>}
+                                {inv.payment_type === 'Consign' && <th>Returned</th>}
                                 {inv.payment_type === 'Consign' && <th>Remaining</th>}
                               </tr>
                             </thead>
@@ -719,8 +758,10 @@ export default function Sales() {
                                   : null
                                 const displayAmt = item.amount != null ? Number(item.amount) : autoAmt
                                 const isOverride = item.amount != null && autoAmt != null && Number(item.amount) !== autoAmt
-                                const countered = inv.payment_type === 'Consign' ? getCounteredQtyForItem(inv.id, item.product_id) : null
-                                const remaining = countered != null ? Number(item.quantity) - countered : null
+                                const isPremium = isOverride && Number(item.amount) > autoAmt
+                                const sold = inv.payment_type === 'Consign' ? getSoldQtyForItem(inv.id, item.product_id) : null
+                                const returnedQty = inv.payment_type === 'Consign' ? getReturnedQtyForItem(inv.id, item.product_id) : null
+                                const remaining = sold != null ? Number(item.quantity) - sold - returnedQty : null
                                 return (
                                   <tr key={item.id}>
                                     <td>{item.products?.name}</td>
@@ -741,15 +782,20 @@ export default function Sales() {
                                                 padding: '1px 5px',
                                                 fontWeight: 600,
                                                 letterSpacing: '0.02em'
-                                              }}>discounted</span>
+                                              }}>{isPremium ? 'premium' : 'discounted'}</span>
                                             )}
                                           </span>
                                         ) : '—'}
                                       </td>
                                     )}
                                     {inv.payment_type === 'Consign' && (
-                                      <td className="td-qty" style={{ color: countered > 0 ? 'var(--green-text)' : undefined }}>
-                                        {countered.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
+                                      <td className="td-qty" style={{ color: sold > 0 ? 'var(--green-text)' : undefined }}>
+                                        {sold.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
+                                      </td>
+                                    )}
+                                    {inv.payment_type === 'Consign' && (
+                                      <td className="td-qty" style={{ color: returnedQty > 0 ? 'var(--amber)' : undefined }}>
+                                        {returnedQty.toLocaleString()} <span className="unit-label">{item.products?.unit}</span>
                                       </td>
                                     )}
                                     {inv.payment_type === 'Consign' && (
@@ -1010,7 +1056,7 @@ export default function Sales() {
                                 pointerEvents: 'none',
                                 textTransform: 'uppercase',
                                 letterSpacing: '0.04em'
-                              }}>disc.</span>
+                              }}>{manualAmt > autoAmt ? 'premium' : 'disc.'}</span>
                             )}
                           </div>
                         )}
