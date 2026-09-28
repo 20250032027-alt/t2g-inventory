@@ -259,6 +259,18 @@ export default function Reports() {
     }, 0)
   const netConsignChangeThisPeriod = newConsignedThisPeriod - settledConsignRevenue - returnedConsignThisPeriod
 
+  // Returns in the selected range, split by whether they came from a consign sale (linked to a
+  // consign invoice) or not. Consign returns are valued at the rate that invoice line was sold at;
+  // the rest have no invoice to look at, so they use the product's current price.
+  const returnsConsignQty = returns.filter(e => e.invoice_id).reduce((s, e) => s + Number(e.quantity), 0)
+  const returnsOtherQty = totalReturns - returnsConsignQty
+  const returnsOtherValue = returns
+    .filter(e => !e.invoice_id)
+    .reduce((s, e) => {
+      const prod = products.find(p => p.id === e.product_id)
+      return s + Number(e.quantity) * (prod?.unit_price ? Number(prod.unit_price) : 0)
+    }, 0)
+
   // Consign (pending), as of the selected "To" date.
   const allTimeConsignValue = consignInvoicesAsOf.reduce((s, inv) =>
     s + (inv.invoice_items || []).reduce((ss, item) => ss + itemRevenue(item), 0), 0)
@@ -456,6 +468,22 @@ export default function Reports() {
                 <div className="stat-value" style={{color: netConsignChangeThisPeriod > 0 ? 'var(--amber)' : netConsignChangeThisPeriod < 0 ? 'var(--green-text)' : undefined, opacity: 0.85}}>
                   {netConsignChangeThisPeriod > 0 ? '+' : ''}{fmt(netConsignChangeThisPeriod)}
                 </div>
+              </div>
+            )}
+            {totalReturns > 0 && (
+              <div className="stat-card" title={`Returns dated ${fmtDate(dateFrom)} – ${fmtDate(dateTo)} that are linked to a consign invoice (unsold consigned stock coming back from a client).${hasPrice ? ' Valued at the rate that invoice line was sold at.' : ''}`}>
+                <div className="stat-label">Consign Returns</div>
+                <div style={{fontSize:11, opacity:0.5, marginTop:1}}>from consign sales</div>
+                <div className="stat-value">{returnsConsignQty.toLocaleString()}</div>
+                {hasPrice && <div style={{fontSize:12, opacity:0.6, marginTop:2}}>{fmt(returnedConsignThisPeriod)}</div>}
+              </div>
+            )}
+            {totalReturns > 0 && (
+              <div className="stat-card" title={`Returns dated ${fmtDate(dateFrom)} – ${fmtDate(dateTo)} that are NOT linked to a consign invoice (cash/credit sales, bad orders, etc.).${hasPrice ? " Valued at each product's current price." : ''}`}>
+                <div className="stat-label">Other Returns</div>
+                <div style={{fontSize:11, opacity:0.5, marginTop:1}}>not from consign sales</div>
+                <div className="stat-value">{returnsOtherQty.toLocaleString()}</div>
+                {hasPrice && <div style={{fontSize:12, opacity:0.6, marginTop:2}}>{fmt(returnsOtherValue)}</div>}
               </div>
             )}
           </div>
