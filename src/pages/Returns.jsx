@@ -355,8 +355,13 @@ export default function Returns() {
                   <td><span className="badge badge-amber">{e.reason}</span></td>
                   <td>{e.restore_stock ? <span className="badge badge-green">Returned to Stock</span> : <span className="badge badge-red">Written Off</span>}</td>
                   <td>{e.invoice_id
-                    ? <span className="badge badge-blue" title={e.invoices?.client}>{e.invoices?.reference_no || 'Consigned'}</span>
-                    : <span className="td-muted">—</span>}</td>
+                    ? (
+                      <>
+                        <span className="badge badge-blue" title={`Consigned return${e.invoices?.client ? ` — ${e.invoices.client}` : ''}`}>Yes</span>
+                        {e.invoices?.reference_no && <div className="td-muted" style={{ fontSize: '0.78em', marginTop: 3 }}>{e.invoices.reference_no}</div>}
+                      </>
+                    )
+                    : <span className="td-muted">No</span>}</td>
                   <td className="td-muted">{e.notes || '—'}</td>
                   <td className="td-actions">
                     <button className="icon-btn" onClick={() => openEdit(e)} title="Edit" style={{ marginRight: 2 }}>
