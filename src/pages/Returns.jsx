@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
-import { Plus, X, Check, ChevronDown, Search, Pencil, Trash2 } from 'lucide-react'
+import { Plus, X, Check, ChevronDown, Search, Pencil, Trash2, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { showToast } from '../components/Toast'
 
 const REASONS = ['Bad Order', 'Wrong Item', 'Damaged', 'Expired', 'Client Return', 'Other']
@@ -41,9 +42,9 @@ export default function Returns() {
   async function fetchAll() {
     setLoading(true)
     const [{ data: prods }, { data: ents }, { data: invs }, { data: cItems }] = await Promise.all([
-      supabase.from('products').select('id, name, unit').order('name'),
+      supabase.from('products').select('id, name, unit, unit_price').order('name'),
       supabase.from('return_entries').select('*, products(name, unit), invoices(reference_no, client, date)').order('date', { ascending: false }),
-      supabase.from('invoices').select('*, invoice_items(product_id, quantity)').eq('payment_type', 'Consign').order('date', { ascending: false }),
+      supabase.from('invoices').select('*, invoice_items(product_id, quantity, amount)').eq('payment_type', 'Consign').order('date', { ascending: false }),
       supabase.from('counter_items').select('invoice_id, product_id, quantity'),
     ])
     setProducts(prods || [])
@@ -77,6 +78,34 @@ export default function Returns() {
     return Math.max(0, Number(item.quantity) - countered - returned)
   }
 
+  const fmt = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  // Actual amount an invoice line was sold for (respects any discount/premium override).
+  function invoiceItemAmount(item) {
+    if (item.amount != null) return Number(item.amount)
+    const price = products.find(p => p.id === item.product_id)?.unit_price
+    return price ? Number(item.quantity) * Number(price) : 0
+  }
+
+  // Real per-unit rate a specific consign invoice's product line was sold at.
+  function invoiceLineRate(invoiceId, productId) {
+    const inv = consignInvoices.find(i => i.id === invoiceId)
+    if (!inv) return null
+    const lines = (inv.invoice_items || []).filter(it => it.product_id === productId)
+    const totalQty = lines.reduce((s, it) => s + Number(it.quantity), 0)
+    if (totalQty === 0) return null
+    return lines.reduce((s, it) => s + invoiceItemAmount(it), 0) / totalQty
+  }
+
+  // Value of a return: a consigned return is valued at the rate its invoice line was actually sold at;
+  // anything else falls back to the product's current price. Null if neither is known.
+  function returnAmount(e) {
+    const rate = e.invoice_id ? invoiceLineRate(e.invoice_id, e.product_id) : null
+    if (rate != null) return Number(e.quantity) * rate
+    const price = products.find(p => p.id === e.product_id)?.unit_price
+    return price ? Number(e.quantity) * Number(price) : null
+  }
+
   const filtered = useMemo(() => {
     let rows = entries
     if (filterReason !== 'all') rows = rows.filter(e => e.reason === filterReason)
@@ -91,6 +120,37 @@ export default function Returns() {
     }
     return rows
   }, [entries, search, filterReason])
+
+  const filteredTotalAmount = filtered.reduce((s, e) => s + (returnAmount(e) || 0), 0)
+  const hasAnyAmount = filtered.some(e => returnAmount(e) != null)
+
+  // Exports whatever is currently shown (respects the search and reason filters).
+  function exportExcel() {
+    if (filtered.length === 0) { showToast('Nothing to export', 'error'); return }
+    const rows = filtered.map(e => {
+      const amt = returnAmount(e)
+      return {
+        'Date': e.date,
+        'Reference #': e.reference_no || '',
+        'Client': e.client || '',
+        'Product': e.products?.name,
+        'Quantity': Number(e.quantity),
+        'Unit': e.products?.unit,
+        'Amount (₱)': amt != null ? Math.round(amt * 100) / 100 : '',
+        'Reason': e.reason,
+        'Stock Action': e.restore_stock ? 'Returned to Stock' : 'Written Off',
+        'Consigned': e.invoice_id ? 'Yes' : 'No',
+        'Consign Invoice': e.invoices?.reference_no || '',
+        'Notes': e.notes || '',
+      }
+    })
+    if (hasAnyAmount) rows.push({ 'Product': 'TOTAL', 'Amount (₱)': Math.round(filteredTotalAmount * 100) / 100 })
+    const ws = XLSX.utils.json_to_sheet(rows)
+    ws['!cols'] = [12, 14, 20, 28, 10, 8, 14, 14, 18, 10, 16, 30].map(wch => ({ wch }))
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Returns')
+    XLSX.writeFile(wb, `T2G_Returns_${today()}.xlsx`)
+  }
 
   function openNew() {
     setEditingEntry(null)
@@ -234,9 +294,14 @@ export default function Returns() {
           <h1>Bad Orders / Returns</h1>
           <p className="page-desc">Log returned or bad order stock and track disposal or re-entry into inventory.</p>
         </div>
-        <button className="btn-primary" onClick={openNew} disabled={products.length === 0}>
-          <Plus size={16} /> Log Return
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn-ghost" onClick={exportExcel} disabled={filtered.length === 0}>
+            <Download size={15} /> Download Excel
+          </button>
+          <button className="btn-primary" onClick={openNew} disabled={products.length === 0}>
+            <Plus size={16} /> Log Return
+          </button>
+        </div>
       </div>
 
       <div className="table-filters">
@@ -251,6 +316,12 @@ export default function Returns() {
           </select>
           <ChevronDown size={15} className="select-icon" />
         </div>
+        {hasAnyAmount && (
+          <div className="filter-revenue" title="Total value of the returns shown below">
+            <span className="filter-revenue-label">Total Amount</span>
+            <span className="filter-revenue-value">{fmt(filteredTotalAmount)}</span>
+          </div>
+        )}
       </div>
 
       {loading ? (
@@ -268,7 +339,7 @@ export default function Returns() {
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Ref #</th><th>Client</th><th>Product</th><th>Qty</th><th>Reason</th><th>Stock Action</th><th>Consign</th><th>Notes</th><th></th></tr>
+              <tr><th>Date</th><th>Ref #</th><th>Client</th><th>Product</th><th>Qty</th><th>Amount</th><th>Reason</th><th>Stock Action</th><th>Consign</th><th>Notes</th><th></th></tr>
             </thead>
             <tbody>
               {filtered.map(e => (
@@ -278,6 +349,9 @@ export default function Returns() {
                   <td className="td-name">{e.client || '—'}</td>
                   <td>{e.products?.name}</td>
                   <td className="td-qty">{Number(e.quantity).toLocaleString()} <span className="unit-label">{e.products?.unit}</span></td>
+                  <td className="td-qty" title={e.invoice_id ? `Valued at the rate consign invoice ${e.invoices?.reference_no || ''} was sold at` : "Valued at the product's current price"}>
+                    {returnAmount(e) != null ? fmt(returnAmount(e)) : <span className="td-muted">—</span>}
+                  </td>
                   <td><span className="badge badge-amber">{e.reason}</span></td>
                   <td>{e.restore_stock ? <span className="badge badge-green">Returned to Stock</span> : <span className="badge badge-red">Written Off</span>}</td>
                   <td>{e.invoice_id
